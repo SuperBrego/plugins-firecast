@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <module sdkVersion="3.7b">
-    <id>br.GodsCorpse.MarkdownPreview</id>
+    <id>br.GodsCorpse.PluginFirecasts</id>
     <version>1.0</version>
 
     <info lang="pt-br">
-        <name>Markdown Preview</name>
-        <description>Ficha de aba dupla para editar e visualizar Markdown</description>
+        <name>Plugin-Firecasts</name>
+        <description>Fichas Fate Core, Markdown Preview e Visual Novel Scene</description>
         <author>GodsCorpse</author>
         <site>https://github.com/SuperBregi</site>
         <contact>GodsCorpse</contact>
