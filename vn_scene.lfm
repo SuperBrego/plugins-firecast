@@ -1,0 +1,539 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<form name="frmVNScene"
+      formType="sheetTemplate"
+      dataType="br.GodsCorpse.VNScene"
+      title="Visual Novel Scene">
+
+    <script>
+    <![CDATA[
+        require("firecast.lua");
+
+        local MAX_EXTRAS   = 6
+        local chatReceiver = nil
+        local npcMap       = {}  -- nome(lower) -> {slot, layer} ou {extra=i}
+        local extraUrls    = {}  -- URL de cada extra
+        local slotUrls     = {
+            left   = { "", "", "" },
+            center = { "", "", "" },
+            right  = { "", "", "" },
+        }
+        -- Cor do nome por NPC (nome lower -> cor hex)
+        local npcColors = {}
+
+        -- ── Utilitários ──────────────────────────────────────────────
+
+        local function slotControls(slotId)
+            return {
+                self["imgSprite_" .. slotId .. "_1"],
+                self["imgSprite_" .. slotId .. "_2"],
+                self["imgSprite_" .. slotId .. "_3"],
+            }
+        end
+
+        local function extraControls(idx)
+            return {
+                img  = self["imgExtra_" .. idx],
+                rect = self["rectExtra_" .. idx],
+            }
+        end
+
+        -- ── Rotação de camadas ───────────────────────────────────────
+
+        local function applySlotOrder(slotId, frontLayer)
+            local imgs = slotControls(slotId)
+            local urls = slotUrls[slotId]
+            local o = {
+                frontLayer,
+                (frontLayer % 3) + 1,
+                ((frontLayer + 1) % 3) + 1
+            }
+            imgs[1].src = urls[o[1]]
+            imgs[2].src = urls[o[2]]
+            imgs[3].src = urls[o[3]]
+        end
+
+        -- ── Foco global entre slots ───────────────────────────────────
+
+        local function applySlotFocus(activeSlotId)
+            for _, sid in ipairs({"left", "center", "right"}) do
+                local imgs = slotControls(sid)
+                if sid == activeSlotId then
+                    imgs[1].opacity = 1.0
+                    imgs[2].opacity = 0.45
+                    imgs[3].opacity = 0.25
+                else
+                    imgs[1].opacity = 0.18
+                    imgs[2].opacity = 0.12
+                    imgs[3].opacity = 0.08
+                end
+            end
+        end
+
+        -- ── Botão de foco manual ─────────────────────────────────────
+
+        local function setFocus(slotId, layer)
+            applySlotOrder(slotId, layer)
+            applySlotFocus(slotId)
+            -- Esconde sprite de extra temporário
+            self.imgExtraSprite.visible = false
+        end
+
+        -- ── Limpar configuração ──────────────────────────────────────
+
+        -- ── Limpar cena ──────────────────────────────────────────────
+
+        local function clearScene()
+            self.rectDialog.visible     = false
+            self.imgDialogAvatar.visible = false
+            self.imgExtraSprite.visible  = false
+            -- Volta todos os slots para opacidade total
+            for _, sid in ipairs({"left", "center", "right"}) do
+                local imgs = slotControls(sid)
+                imgs[1].opacity = 1.0
+                imgs[2].opacity = 0.45
+                imgs[3].opacity = 0.25
+            end
+        end
+
+        -- ── Carrega configurações ────────────────────────────────────
+
+        local function loadConfig()
+            local node = sheet
+            self.imgBackground.src = (node and node.bgUrl) or ""
+
+            npcMap    = {}
+            npcColors = {}
+            extraUrls = {}
+
+            for _, slotId in ipairs({"left", "center", "right"}) do
+                local visible = (node and node["slot_" .. slotId .. "_visible"]) == true
+
+                for layer = 1, 3 do
+                    local url   = (node and node["slot_" .. slotId .. "_url"   .. layer]) or ""
+                    local name  = (node and node["slot_" .. slotId .. "_npc"   .. layer]) or ""
+                    local color = (node and node["slot_" .. slotId .. "_color" .. layer]) or "#a89fd8"
+                    slotUrls[slotId][layer] = url
+                    if name ~= "" then
+                        npcMap[name:lower()]    = { slot = slotId, layer = layer }
+                        npcColors[name:lower()] = color
+                    end
+                end
+
+                local frontStr = (node and node["slot_" .. slotId .. "_front"]) or "1"
+                local front    = tonumber(frontStr) or 1
+                applySlotOrder(slotId, front)
+
+                local imgs = slotControls(slotId)
+                imgs[1].visible = visible
+                imgs[2].visible = visible
+                imgs[3].visible = visible
+
+                -- Preview por linha
+                for layer = 1, 3 do
+                    local prevImg = self["imgPreview_" .. slotId .. "_" .. layer]
+                    if prevImg then prevImg.src = slotUrls[slotId][layer] end
+                end
+            end
+
+            for i = 1, MAX_EXTRAS do
+                local npcName = (node and node["extra_" .. i .. "_npc"])   or ""
+                local url     = (node and node["extra_" .. i .. "_url"])   or ""
+                local color   = (node and node["extra_" .. i .. "_color"]) or "#a89fd8"
+                extraUrls[i]  = url
+                local ctrls   = extraControls(i)
+                ctrls.img.src      = url
+                ctrls.rect.visible = (url ~= "" or npcName ~= "")
+                ctrls.img.visible  = (url ~= "")
+
+                if npcName ~= "" then
+                    npcMap[npcName:lower()]    = { extra = i }
+                    npcColors[npcName:lower()] = color
+                end
+
+                -- Preview na config
+                local prevImg = self["imgPreviewExtra_" .. i]
+                if prevImg then prevImg.src = url end
+            end
+        end
+
+        -- ── Limpar configuração ──────────────────────────────────────
+
+        local function clearConfig()
+            local node = sheet
+            if not node then return end
+
+            node.bgUrl = ""
+
+            for _, slotId in ipairs({"left", "center", "right"}) do
+                node["slot_" .. slotId .. "_visible"] = false
+                for layer = 1, 3 do
+                    node["slot_" .. slotId .. "_npc"   .. layer] = ""
+                    node["slot_" .. slotId .. "_url"   .. layer] = ""
+                    node["slot_" .. slotId .. "_color" .. layer] = ""
+                end
+            end
+
+            for i = 1, MAX_EXTRAS do
+                node["extra_" .. i .. "_npc"]   = ""
+                node["extra_" .. i .. "_url"]   = ""
+                node["extra_" .. i .. "_color"] = ""
+            end
+
+            loadConfig()
+        end
+
+        -- ── Diálogo ──────────────────────────────────────────────────
+
+        local function showDialog(npcName, content, avatarUrl)
+            local color = npcColors[npcName:lower()] or "#a89fd8"
+            self.labDialogName.text      = npcName or ""
+            self.labDialogName.fontColor = color
+            self.labDialogContent.text   = content or ""
+            self.rectDialog.visible      = true
+
+            -- Avatar
+            if avatarUrl and avatarUrl ~= "" then
+                self.imgDialogAvatar.src     = avatarUrl
+                self.imgDialogAvatar.visible = true
+                -- Recua o texto para dar espaço ao avatar
+                self.labDialogName.left    = 100
+                self.labDialogName.width   = 1145
+                self.labDialogContent.left = 100
+                self.labDialogContent.width = 1145
+            else
+                self.imgDialogAvatar.visible = false
+                self.labDialogName.left    = 35
+                self.labDialogName.width   = 1210
+                self.labDialogContent.left = 35
+                self.labDialogContent.width = 1210
+            end
+        end
+
+        -- ── Chat ─────────────────────────────────────────────────────
+
+        local function onChatMessage(msg)
+            local logRec = msg.logRec
+            if not logRec then return end
+            local msgContent = logRec.msg
+            if not msgContent then return end
+
+            local content     = msgContent.content or ""
+            local impersonate = msgContent.impersonation
+            if not impersonate then return end
+
+            if impersonate.mode == "character" then
+                local npcName = impersonate.name or ""
+                local entry   = npcMap[npcName:lower()]
+
+                if entry then
+                    if entry.slot then
+                        -- NPC de slot normal
+                        local avatarUrl = slotUrls[entry.slot][entry.layer]
+                        if sheet then
+                            sheet["slot_" .. entry.slot .. "_front"] = tostring(entry.layer)
+                        end
+                        applySlotOrder(entry.slot, entry.layer)
+                        applySlotFocus(entry.slot)
+                        self.imgExtraSprite.visible = false
+                        showDialog(npcName, content, avatarUrl)
+
+                    elseif entry.extra then
+                        -- Extra entra em cena no slot centro temporariamente
+                        local url = extraUrls[entry.extra] or ""
+                        self.imgExtraSprite.src     = url
+                        self.imgExtraSprite.visible = true
+                        -- Escurece os slots para dar destaque ao extra
+                        for _, sid in ipairs({"left", "center", "right"}) do
+                            local imgs = slotControls(sid)
+                            imgs[1].opacity = 0.18
+                            imgs[2].opacity = 0.12
+                            imgs[3].opacity = 0.08
+                        end
+                        showDialog(npcName, content, url)
+                    end
+                else
+                    -- NPC não mapeado: só texto
+                    self.imgExtraSprite.visible = false
+                    showDialog(npcName, content, nil)
+                end
+
+            elseif impersonate.mode == "narrator" then
+                self.imgExtraSprite.visible  = false
+                self.imgDialogAvatar.visible = false
+                self.labDialogName.text      = "Narrador"
+                self.labDialogName.fontColor = "#cccccc"
+                self.labDialogContent.text   = msgContent.content or ""
+                self.rectDialog.visible      = true
+                self.labDialogName.left  = 35; self.labDialogName.width  = 1210
+                self.labDialogContent.left = 35; self.labDialogContent.width = 1210
+                applySlotFocus(nil)
+            end
+        end
+
+        -- ── Init ─────────────────────────────────────────────────────
+
+        local function enterPresentation()
+            self.barControle.visible  = false
+            self.panelConfig.visible  = false
+            self.btnVoltar.visible    = true
+            local s = math.min(
+                self.frmStageContainer.width  / 1280,
+                self.frmStageContainer.height / 600
+            )
+            self.frmStage.scaleX = s
+            self.frmStage.scaleY = s
+        end
+
+        local function exitPresentation()
+            self.barControle.visible = true
+            self.btnVoltar.visible   = false
+            self.frmStage.scaleX     = 1
+            self.frmStage.scaleY     = 1
+        end
+
+        local function init()
+            loadConfig()
+            if chatReceiver == nil then
+                chatReceiver = Firecast.Messaging.newReceiver("ChatMessageEx", onChatMessage)
+            end
+        end
+    ]]>
+    </script>
+
+    <event name="onNodeReady">
+        <![CDATA[ init() ]]>
+    </event>
+
+    <!-- ── BARRA DE CONTROLE ── -->
+    <layout align="top" height="28" name="barControle">
+        <button align="left" width="110" height="28" text="⚙ Configuração"
+                fontSize="11" onClick="self.panelConfig.visible = not self.panelConfig.visible"/>
+        <button align="left" width="80" height="28" text="✕ Limpar"
+                fontSize="11" margins="{left=4}" onClick="clearScene()"/>
+        <button align="left" width="110" height="28" text="▶ Apresentação"
+                fontSize="11" margins="{left=4}"
+                onClick="enterPresentation()"/>
+    </layout>
+
+    <!-- ── PAINEL DE CONFIGURAÇÃO (direita, togglável) ── -->
+    <layout align="right" width="440" name="panelConfig" visible="true">
+        <scrollBox align="client">
+            <layout left="0" top="0" width="416" height="1900"
+                    margins="{left=12, right=12, top=12, bottom=12}">
+
+                <!-- Botões de ação -->
+                <button align="top" height="28" text="🗑 Limpar tudo (nomes e URLs)"
+                        margins="{bottom=8}"
+                        onClick="clearConfig()"/>
+                <label text="Imagem de Fundo" align="top" height="20"
+                       fontStyle="bold" fontSize="13"/>
+                <edit align="top" height="28" field="bgUrl"
+                      hint="URL da imagem de fundo" margins="{bottom=16}"
+                      onExit="loadConfig()"/>
+
+                <!-- SLOTS -->
+                <label text="Slots de Personagem" align="top" height="20"
+                       fontStyle="bold" fontSize="13"/>
+                <label text="Cada slot tem 3 camadas. Use ★ para foco manual."
+                       align="top" height="18" fontSize="11"
+                       fontColor="Gray" margins="{bottom=8}"/>
+
+                <layout align="top" height="18" margins="{bottom=4}">
+                    <label text="Camada" align="left" width="44" fontSize="10" fontColor="Gray"/>
+                    <label text="Nome" align="left" width="100" fontSize="10" fontColor="Gray" margins="{left=4}"/>
+                    <label text="Cor" align="left" width="52" fontSize="10" fontColor="Gray" margins="{left=4}"/>
+                    <label text="URL" align="client" fontSize="10" fontColor="Gray" margins="{left=4}"/>
+                    <label text="Prev" align="right" width="36" fontSize="10" fontColor="Gray" horzTextAlign="center" margins="{right=4}"/>
+                    <label text="★" align="right" width="28" fontSize="10" fontColor="Gray" horzTextAlign="center"/>
+                </layout>
+
+                <!-- Slot Esquerda -->
+                <layout align="top" height="20" margins="{bottom=4}">
+                    <label text="Esquerda" align="left" width="100" fontSize="11" fontStyle="bold" vertTextAlign="center"/>
+                    <checkBox align="client" field="slot_left_visible" text="Visível" margins="{left=4}" onChange="loadConfig()"/>
+                </layout>
+                <layout align="top" height="36" margins="{bottom=4}">
+                    <label text="Frente" align="left" width="44" fontSize="10" fontColor="Gray" vertTextAlign="center"/>
+                    <edit align="left" width="100" field="slot_left_npc1" hint="Nome" margins="{left=4, right=4}" onExit="loadConfig()"/>
+                    <edit align="left" width="52" field="slot_left_color1" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
+                    <edit align="client" field="slot_left_url1" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
+                    <image name="imgPreview_left_1" align="right" width="36" height="36" style="proportional" src="" margins="{right=4}"/>
+                    <button align="right" width="28" height="36" text="★" onClick="setFocus('left', 1)"/>
+                </layout>
+                <layout align="top" height="36" margins="{bottom=4}">
+                    <label text="Meio" align="left" width="44" fontSize="10" fontColor="Gray" vertTextAlign="center"/>
+                    <edit align="left" width="100" field="slot_left_npc2" hint="Nome" margins="{left=4, right=4}" onExit="loadConfig()"/>
+                    <edit align="left" width="52" field="slot_left_color2" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
+                    <edit align="client" field="slot_left_url2" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
+                    <image name="imgPreview_left_2" align="right" width="36" height="36" style="proportional" src="" margins="{right=4}"/>
+                    <button align="right" width="28" height="36" text="★" onClick="setFocus('left', 2)"/>
+                </layout>
+                <layout align="top" height="36" margins="{bottom=12}">
+                    <label text="Atrás" align="left" width="44" fontSize="10" fontColor="Gray" vertTextAlign="center"/>
+                    <edit align="left" width="100" field="slot_left_npc3" hint="Nome" margins="{left=4, right=4}" onExit="loadConfig()"/>
+                    <edit align="left" width="52" field="slot_left_color3" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
+                    <edit align="client" field="slot_left_url3" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
+                    <image name="imgPreview_left_3" align="right" width="36" height="36" style="proportional" src="" margins="{right=4}"/>
+                    <button align="right" width="28" height="36" text="★" onClick="setFocus('left', 3)"/>
+                </layout>
+
+                <!-- Slot Centro -->
+                <layout align="top" height="20" margins="{bottom=4}">
+                    <label text="Centro" align="left" width="100" fontSize="11" fontStyle="bold" vertTextAlign="center"/>
+                    <checkBox align="client" field="slot_center_visible" text="Visível" margins="{left=4}" onChange="loadConfig()"/>
+                </layout>
+                <layout align="top" height="36" margins="{bottom=4}">
+                    <label text="Frente" align="left" width="44" fontSize="10" fontColor="Gray" vertTextAlign="center"/>
+                    <edit align="left" width="100" field="slot_center_npc1" hint="Nome" margins="{left=4, right=4}" onExit="loadConfig()"/>
+                    <edit align="left" width="52" field="slot_center_color1" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
+                    <edit align="client" field="slot_center_url1" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
+                    <image name="imgPreview_center_1" align="right" width="36" height="36" style="proportional" src="" margins="{right=4}"/>
+                    <button align="right" width="28" height="36" text="★" onClick="setFocus('center', 1)"/>
+                </layout>
+                <layout align="top" height="36" margins="{bottom=4}">
+                    <label text="Meio" align="left" width="44" fontSize="10" fontColor="Gray" vertTextAlign="center"/>
+                    <edit align="left" width="100" field="slot_center_npc2" hint="Nome" margins="{left=4, right=4}" onExit="loadConfig()"/>
+                    <edit align="left" width="52" field="slot_center_color2" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
+                    <edit align="client" field="slot_center_url2" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
+                    <image name="imgPreview_center_2" align="right" width="36" height="36" style="proportional" src="" margins="{right=4}"/>
+                    <button align="right" width="28" height="36" text="★" onClick="setFocus('center', 2)"/>
+                </layout>
+                <layout align="top" height="36" margins="{bottom=12}">
+                    <label text="Atrás" align="left" width="44" fontSize="10" fontColor="Gray" vertTextAlign="center"/>
+                    <edit align="left" width="100" field="slot_center_npc3" hint="Nome" margins="{left=4, right=4}" onExit="loadConfig()"/>
+                    <edit align="left" width="52" field="slot_center_color3" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
+                    <edit align="client" field="slot_center_url3" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
+                    <image name="imgPreview_center_3" align="right" width="36" height="36" style="proportional" src="" margins="{right=4}"/>
+                    <button align="right" width="28" height="36" text="★" onClick="setFocus('center', 3)"/>
+                </layout>
+
+                <!-- Slot Direita -->
+                <layout align="top" height="20" margins="{bottom=4}">
+                    <label text="Direita" align="left" width="100" fontSize="11" fontStyle="bold" vertTextAlign="center"/>
+                    <checkBox align="client" field="slot_right_visible" text="Visível" margins="{left=4}" onChange="loadConfig()"/>
+                </layout>
+                <layout align="top" height="36" margins="{bottom=4}">
+                    <label text="Frente" align="left" width="44" fontSize="10" fontColor="Gray" vertTextAlign="center"/>
+                    <edit align="left" width="100" field="slot_right_npc1" hint="Nome" margins="{left=4, right=4}" onExit="loadConfig()"/>
+                    <edit align="left" width="52" field="slot_right_color1" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
+                    <edit align="client" field="slot_right_url1" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
+                    <image name="imgPreview_right_1" align="right" width="36" height="36" style="proportional" src="" margins="{right=4}"/>
+                    <button align="right" width="28" height="36" text="★" onClick="setFocus('right', 1)"/>
+                </layout>
+                <layout align="top" height="36" margins="{bottom=4}">
+                    <label text="Meio" align="left" width="44" fontSize="10" fontColor="Gray" vertTextAlign="center"/>
+                    <edit align="left" width="100" field="slot_right_npc2" hint="Nome" margins="{left=4, right=4}" onExit="loadConfig()"/>
+                    <edit align="left" width="52" field="slot_right_color2" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
+                    <edit align="client" field="slot_right_url2" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
+                    <image name="imgPreview_right_2" align="right" width="36" height="36" style="proportional" src="" margins="{right=4}"/>
+                    <button align="right" width="28" height="36" text="★" onClick="setFocus('right', 2)"/>
+                </layout>
+                <layout align="top" height="36" margins="{bottom=12}">
+                    <label text="Atrás" align="left" width="44" fontSize="10" fontColor="Gray" vertTextAlign="center"/>
+                    <edit align="left" width="100" field="slot_right_npc3" hint="Nome" margins="{left=4, right=4}" onExit="loadConfig()"/>
+                    <edit align="left" width="52" field="slot_right_color3" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
+                    <edit align="client" field="slot_right_url3" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
+                    <image name="imgPreview_right_3" align="right" width="36" height="36" style="proportional" src="" margins="{right=4}"/>
+                    <button align="right" width="28" height="36" text="★" onClick="setFocus('right', 3)"/>
+                </layout>
+
+                <!-- Extras -->
+                <label text="Personagens Extras" align="top" height="20" fontStyle="bold" fontSize="13"/>
+                <label text="Quando falam, aparecem no centro temporariamente."
+                       align="top" height="18" fontSize="11" fontColor="Gray" margins="{bottom=8}"/>
+                <layout align="top" height="18" margins="{bottom=4}">
+                    <label text="Nome" align="left" width="100" fontSize="10" fontColor="Gray"/>
+                    <label text="Cor" align="left" width="52" fontSize="10" fontColor="Gray" margins="{left=4}"/>
+                    <label text="URL" align="client" fontSize="10" fontColor="Gray" margins="{left=4}"/>
+                    <label text="Prev" align="right" width="36" fontSize="10" fontColor="Gray" horzTextAlign="center"/>
+                </layout>
+                <layout align="top" height="36" margins="{bottom=6}">
+                    <edit align="left" width="100" field="extra_1_npc" hint="Extra 1" margins="{right=4}" onExit="loadConfig()"/>
+                    <edit align="left" width="52" field="extra_1_color" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
+                    <edit align="client" field="extra_1_url" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
+                    <image name="imgPreviewExtra_1" align="right" width="36" height="36" style="proportional" src=""/>
+                </layout>
+                <layout align="top" height="36" margins="{bottom=6}">
+                    <edit align="left" width="100" field="extra_2_npc" hint="Extra 2" margins="{right=4}" onExit="loadConfig()"/>
+                    <edit align="left" width="52" field="extra_2_color" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
+                    <edit align="client" field="extra_2_url" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
+                    <image name="imgPreviewExtra_2" align="right" width="36" height="36" style="proportional" src=""/>
+                </layout>
+                <layout align="top" height="36" margins="{bottom=6}">
+                    <edit align="left" width="100" field="extra_3_npc" hint="Extra 3" margins="{right=4}" onExit="loadConfig()"/>
+                    <edit align="left" width="52" field="extra_3_color" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
+                    <edit align="client" field="extra_3_url" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
+                    <image name="imgPreviewExtra_3" align="right" width="36" height="36" style="proportional" src=""/>
+                </layout>
+                <layout align="top" height="36" margins="{bottom=6}">
+                    <edit align="left" width="100" field="extra_4_npc" hint="Extra 4" margins="{right=4}" onExit="loadConfig()"/>
+                    <edit align="left" width="52" field="extra_4_color" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
+                    <edit align="client" field="extra_4_url" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
+                    <image name="imgPreviewExtra_4" align="right" width="36" height="36" style="proportional" src=""/>
+                </layout>
+                <layout align="top" height="36" margins="{bottom=6}">
+                    <edit align="left" width="100" field="extra_5_npc" hint="Extra 5" margins="{right=4}" onExit="loadConfig()"/>
+                    <edit align="left" width="52" field="extra_5_color" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
+                    <edit align="client" field="extra_5_url" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
+                    <image name="imgPreviewExtra_5" align="right" width="36" height="36" style="proportional" src=""/>
+                </layout>
+                <layout align="top" height="36" margins="{bottom=16}">
+                    <edit align="left" width="100" field="extra_6_npc" hint="Extra 6" margins="{right=4}" onExit="loadConfig()"/>
+                    <edit align="left" width="52" field="extra_6_color" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
+                    <edit align="client" field="extra_6_url" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
+                    <image name="imgPreviewExtra_6" align="right" width="36" height="36" style="proportional" src=""/>
+                </layout>
+
+            </layout>
+        </scrollBox>
+    </layout>
+
+    <!-- ── CANVAS DA CENA (sempre visível) ── -->
+    <layout align="client" name="frmStageContainer">
+        <layout left="0" top="0" width="1280" height="600" name="frmStage">
+
+            <image name="imgBackground" left="0" top="0" width="1280" height="600" style="stretch" src=""/>
+
+            <image name="imgSprite_left_3"   left="160" top="215" width="239" height="400" style="proportional" opacity="0.25" visible="false" src=""/>
+            <image name="imgSprite_left_2"   left="96"  top="107" width="288" height="480" style="proportional" opacity="0.45" visible="false" src=""/>
+            <image name="imgSprite_left_1"   left="23"  top="0"   width="337" height="564" style="proportional" opacity="1.0"  visible="false" src=""/>
+
+            <image name="imgSprite_center_3" left="625" top="215" width="239" height="400" style="proportional" opacity="0.25" visible="false" src=""/>
+            <image name="imgSprite_center_2" left="561" top="107" width="288" height="480" style="proportional" opacity="0.45" visible="false" src=""/>
+            <image name="imgSprite_center_1" left="529" top="0"   width="337" height="564" style="proportional" opacity="1.0"  visible="false" src=""/>
+
+            <image name="imgSprite_right_3"  left="1100" top="215" width="239" height="400" style="proportional" opacity="0.25" visible="false" src=""/>
+            <image name="imgSprite_right_2"  left="1036" top="107" width="288" height="480" style="proportional" opacity="0.45" visible="false" src=""/>
+            <image name="imgSprite_right_1"  left="1033" top="0"   width="337" height="564" style="proportional" opacity="1.0"  visible="false" src=""/>
+
+            <image name="imgExtraSprite" left="471" top="0" width="337" height="564" style="proportional" opacity="1.0" visible="false" src=""/>
+
+            <rectangle name="rectExtrasBar" left="0" top="467" width="1280" height="56" color="#0a0820" opacity="0.75"/>
+
+            <rectangle name="rectExtra_1" left="426" top="471" width="58" height="48" color="#1a1535" opacity="0.9" visible="false"/>
+            <image     name="imgExtra_1"  left="431" top="474" width="49" height="41" style="proportional" visible="false" src=""/>
+            <rectangle name="rectExtra_2" left="493" top="471" width="58" height="48" color="#1a1535" opacity="0.9" visible="false"/>
+            <image     name="imgExtra_2"  left="497" top="474" width="49" height="41" style="proportional" visible="false" src=""/>
+            <rectangle name="rectExtra_3" left="560" top="471" width="58" height="48" color="#1a1535" opacity="0.9" visible="false"/>
+            <image     name="imgExtra_3"  left="564" top="474" width="49" height="41" style="proportional" visible="false" src=""/>
+            <rectangle name="rectExtra_4" left="627" top="471" width="58" height="48" color="#1a1535" opacity="0.9" visible="false"/>
+            <image     name="imgExtra_4"  left="631" top="474" width="49" height="41" style="proportional" visible="false" src=""/>
+            <rectangle name="rectExtra_5" left="694" top="471" width="58" height="48" color="#1a1535" opacity="0.9" visible="false"/>
+            <image     name="imgExtra_5"  left="698" top="474" width="49" height="41" style="proportional" visible="false" src=""/>
+            <rectangle name="rectExtra_6" left="761" top="471" width="58" height="48" color="#1a1535" opacity="0.9" visible="false"/>
+            <image     name="imgExtra_6"  left="765" top="474" width="49" height="41" style="proportional" visible="false" src=""/>
+
+            <rectangle name="rectDialog" left="0" top="516" width="1280" height="84" color="#0a0820" opacity="0.88" visible="false"/>
+            <image name="imgDialogAvatar" left="38" top="519" width="56" height="56" style="proportional" visible="false" src=""/>
+            <label name="labDialogName"    left="35" top="521" width="1210" height="22" text="" fontColor="#a89fd8" fontSize="13" fontStyle="bold"/>
+            <label name="labDialogContent" left="35" top="545" width="1210" height="52" text="" fontColor="White" fontSize="12" wordWrap="true"/>
+
+            <!-- Botão voltar do modo apresentação -->
+            <button name="btnVoltar" left="4" top="4" width="80" height="22"
+                    text="◀ Voltar" fontSize="9" visible="false"
+                    onClick="exitPresentation()"/>
+
+    </layout>
+    </layout>
+
+</form>
