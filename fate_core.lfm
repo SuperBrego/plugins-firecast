@@ -72,7 +72,10 @@
             local valor = tonumber(sheet and sheet["pericia" .. i .. "_valor"])
             local nivel = self["nivelPericia_" .. i]
             if nivel then
-                nivel.text = valor and niveisPericia[valor] or ""
+                local texto = valor and niveisPericia[valor] or ""
+                nivel.text = texto
+                nivel.fontColor = texto ~= "" and "#C97A85" or "Gray"
+                nivel.fontStyle = texto ~= "" and "bold" or ""
             end
         end
 
@@ -93,7 +96,7 @@
                 atualizarNivelPericia(i)
             end
             local corpo = self["corpoPrincipal"]
-            if corpo then corpo.height = 520 end
+            if corpo then corpo.height = 560 end
             local lista = self["listaPericiasFacanhas"]
             if lista then lista.height = math.max(600, 70 + ultimaPericia * 57) end
         end
@@ -204,6 +207,57 @@
             atualizarDicaRetrato()
         end
 
+        local function aplicarModoCompacto()
+            if not sheet then return end
+            local compacto = sheet.cfg_compacto == true
+            local descricao = self["secaoDescricaoPessoal"]
+            local recursos = self["secaoRecursosPessoal"]
+            local conteudo = self["conteudoPessoal"]
+
+            if descricao then descricao.visible = not compacto end
+            if recursos then recursos.visible = not compacto end
+            if conteudo then conteudo.height = compacto and 230 or 1110 end
+
+            local margemCartao = compacto and {left=4, right=4, top=4, bottom=4} or {left=8, right=8, top=8, bottom=8}
+            for _, nome in ipairs({"paddingAspectos", "paddingPericias", "paddingFacanhas"}) do
+                local painel = self[nome]
+                if painel then painel.margins = margemCartao end
+            end
+            local ficha = self["conteudoFicha"]
+            if ficha then ficha.margins = compacto and {left=6, right=6, top=6, bottom=6} or {left=10, right=10, top=10, bottom=10} end
+        end
+
+        local function aplicarTemaVisual()
+            if not sheet then return end
+            if sheet.cfg_tema == nil or sheet.cfg_tema == "" then sheet.cfg_tema = "grafite" end
+            local tema = sheet.cfg_tema
+            local corCartao, corBorda, opacidade = "#242328", "#4F2930", 0.12
+            if tema == "classico" then
+                corCartao, corBorda, opacidade = "#342C25", "#8C7252", 0.05
+            elseif tema == "contraste" then
+                corCartao, corBorda, opacidade = "#151515", "#E4C2C6", 0
+            end
+
+            local nomesCartao = {
+                "cardCabecalho", "cardEstado", "cardAspectos",
+                "cardPericias", "cardFacanhas",
+                "cardExtra1", "cardExtra2", "cardExtra3",
+                "cardExtra4", "cardExtra5", "cardExtra6",
+                "cardPessoalIdent", "cardPessoalDescricao", "cardPessoalRecursos"
+            }
+            for _, nome in ipairs(nomesCartao) do
+                local cartao = self[nome]
+                if cartao then
+                    cartao.color = corCartao
+                    cartao.strokeColor = corBorda
+                end
+            end
+            for _, nome in ipairs({"texturaFicha", "texturaExtras", "texturaPessoal", "texturaConfiguracao"}) do
+                local textura = self[nome]
+                if textura then textura.opacity = opacidade end
+            end
+        end
+
         -- Aplica todas as configurações
 
         local function aplicarConfig()
@@ -213,6 +267,8 @@
             atualizarFacanhas()
             atualizarExtras()
             atualizarDicaRetrato()
+            aplicarModoCompacto()
+            aplicarTemaVisual()
         end
     ]]>
     </script>
@@ -227,34 +283,41 @@
         <!-- ABA 1 — FICHA                                             -->
         <!-- ══════════════════════════════════════════════════════════ -->
         <tab title="Ficha">
-            <scrollBox align="client">
-                <layout align="top" height="2200" margins="{left=10, right=10, top=10, bottom=10}">
+            <layout align="client">
+                <image name="texturaFicha" align="client" src="assets/fate-textura-grafite.png" style="stretch" opacity="0.12"/>
+                <scrollBox align="client">
+                <layout name="conteudoFicha" align="top" height="2200" margins="{left=10, right=10, top=10, bottom=10}">
 
                     <!-- ── Cabeçalho ── -->
                     <layout align="top" height="58" margins="{bottom=10}">
+                        <layout align="client">
+                        <rectangle name="cardCabecalho" align="client" color="#242328" strokeColor="#4F2930" strokeSize="1"/>
+                        <layout align="client" margins="{left=8, right=8, top=8, bottom=8}">
                         <layout align="client" margins="{right=8}">
-                            <label text="Nome" align="top" height="18"
-                                   fontSize="11" fontColor="Gray" fontStyle="bold"/>
+                            <label text="NOME DO PERSONAGEM" align="top" height="18"
+                                   fontSize="11" fontColor="#C97A85" fontStyle="bold"/>
                             <edit align="client" field="nome" fontSize="15"/>
                         </layout>
                         <layout align="right" width="120">
                             <layout align="left" width="56" margins="{right=8}">
-                                <label text="Recarga" align="top" height="18"
-                                       fontSize="10" fontColor="Gray" fontStyle="bold"/>
+                                <label text="RECARGA" align="top" height="18"
+                                       fontSize="10" fontColor="#C97A85" fontStyle="bold"/>
                                 <edit align="client" field="recarga"
                                       horzTextAlign="center" fontSize="15"/>
                             </layout>
                             <layout align="client">
-                                <label text="P. Destino" align="top" height="18"
-                                       fontSize="10" fontColor="Gray" fontStyle="bold"/>
+                                <label text="P. DESTINO" align="top" height="18"
+                                       fontSize="10" fontColor="#C97A85" fontStyle="bold"/>
                                 <edit align="client" field="pontosDestino"
                                       horzTextAlign="center" fontSize="15"/>
                             </layout>
                         </layout>
+                        </layout>
+                        </layout>
                     </layout>
 
                     <!-- ── Corpo principal: Perícias | Retrato+Aspectos ── -->
-                    <layout name="corpoPrincipal" align="top" height="520" margins="{bottom=10}">
+                    <layout name="corpoPrincipal" align="top" height="560" margins="{bottom=10}">
 
                         <!-- Escada de Perícias -->
                         <layout align="left" width="260" visible="false" margins="{right=8}">
@@ -423,55 +486,64 @@
 
                         <!-- Aspectos -->
                         <layout align="client">
+                            <rectangle name="cardAspectos" align="client" color="#242328" strokeColor="#4F2930" strokeSize="1"/>
+                            <layout name="paddingAspectos" align="client" margins="{left=8, right=8, top=8, bottom=8}">
 
                             <!-- Retrato, estresse e consequências -->
-                            <layout align="top" height="230" margins="{bottom=12}">
-                                <layout align="left" width="180" margins="{right=12}">
+                            <layout align="top" height="280" margins="{bottom=12}">
+                                <layout align="client">
+                                <rectangle name="cardEstado" align="client" color="#201F24" strokeColor="#503038" strokeSize="1"/>
+                                <layout align="client" margins="{left=10, right=10, top=10, bottom=10}">
+                                <layout align="left" width="280" margins="{right=12}">
                                     <button align="bottom" height="26" text="Remover imagem"
                                             fontSize="9" onClick="removerRetrato()" margins="{top=4}"/>
-                                    <rectangle align="client" color="#2B2B2B" strokeColor="#888888"
-                                               strokeSize="2" strokeDash="dash"/>
+                                    <rectangle align="client" color="#25252B" strokeColor="#8A3340"
+                                               strokeSize="2"/>
                                     <image name="imgRetrato" align="client" field="retrato" editable="true"
                                            style="proportional" onPictureLoadedChange="atualizarDicaRetrato()"
                                            onLoad="atualizarDicaRetrato()"/>
                                     <label name="dicaRetrato" text="Clique aqui para adicionar imagem" align="client"
-                                           fontSize="11" fontColor="#D0D0D0" horzTextAlign="center"
+                                           fontSize="11" fontColor="#E4C2C6" horzTextAlign="center"
                                            vertTextAlign="center"/>
                                 </layout>
                                 <layout align="client">
                                     <layout align="top" height="34" margins="{bottom=6}">
-                                        <label text="Estresse Físico" align="left" width="150" fontSize="11" fontColor="Gray" vertTextAlign="center"/>
-                                        <checkBox name="chkFisicoTopo_1" align="left" width="30" field="stF1" text="1" fontSize="10"/>
-                                        <checkBox name="chkFisicoTopo_2" align="left" width="30" field="stF2" text="2" fontSize="10"/>
-                                        <checkBox name="chkFisicoTopo_3" align="left" width="30" field="stF3" text="3" fontSize="10"/>
-                                        <checkBox name="chkFisicoTopo_4" align="left" width="30" field="stF4" text="4" fontSize="10"/>
+                                        <label text="ESTRESSE FÍSICO" align="left" width="150" fontSize="11" fontColor="#E4C2C6" fontStyle="bold" vertTextAlign="center"/>
+                                        <checkBox name="chkFisicoTopo_1" align="left" width="30" field="stF1" text="1" fontSize="10" fontColor="#C97A85" fontStyle="bold"/>
+                                        <checkBox name="chkFisicoTopo_2" align="left" width="30" field="stF2" text="2" fontSize="10" fontColor="#C97A85" fontStyle="bold"/>
+                                        <checkBox name="chkFisicoTopo_3" align="left" width="30" field="stF3" text="3" fontSize="10" fontColor="#C97A85" fontStyle="bold"/>
+                                        <checkBox name="chkFisicoTopo_4" align="left" width="30" field="stF4" text="4" fontSize="10" fontColor="#C97A85" fontStyle="bold"/>
                                         <checkBox name="chkFisicoTopo_5" align="left" width="30" field="stF5" text="5" fontSize="10" visible="false"/>
                                         <checkBox name="chkFisicoTopo_6" align="left" width="30" field="stF6" text="6" fontSize="10" visible="false"/>
                                         <checkBox name="chkFisicoTopo_7" align="left" width="30" field="stF7" text="7" fontSize="10" visible="false"/>
                                         <checkBox name="chkFisicoTopo_8" align="left" width="30" field="stF8" text="8" fontSize="10" visible="false"/>
                                     </layout>
                                     <layout align="top" height="34" margins="{bottom=8}">
-                                        <label text="Estresse Mental" align="left" width="150" fontSize="11" fontColor="Gray" vertTextAlign="center"/>
-                                        <checkBox name="chkMentalTopo_1" align="left" width="30" field="stM1" text="1" fontSize="10"/>
-                                        <checkBox name="chkMentalTopo_2" align="left" width="30" field="stM2" text="2" fontSize="10"/>
-                                        <checkBox name="chkMentalTopo_3" align="left" width="30" field="stM3" text="3" fontSize="10"/>
-                                        <checkBox name="chkMentalTopo_4" align="left" width="30" field="stM4" text="4" fontSize="10"/>
+                                        <label text="ESTRESSE MENTAL" align="left" width="150" fontSize="11" fontColor="#E4C2C6" fontStyle="bold" vertTextAlign="center"/>
+                                        <checkBox name="chkMentalTopo_1" align="left" width="30" field="stM1" text="1" fontSize="10" fontColor="#C97A85" fontStyle="bold"/>
+                                        <checkBox name="chkMentalTopo_2" align="left" width="30" field="stM2" text="2" fontSize="10" fontColor="#C97A85" fontStyle="bold"/>
+                                        <checkBox name="chkMentalTopo_3" align="left" width="30" field="stM3" text="3" fontSize="10" fontColor="#C97A85" fontStyle="bold"/>
+                                        <checkBox name="chkMentalTopo_4" align="left" width="30" field="stM4" text="4" fontSize="10" fontColor="#C97A85" fontStyle="bold"/>
                                         <checkBox name="chkMentalTopo_5" align="left" width="30" field="stM5" text="5" fontSize="10" visible="false"/>
                                         <checkBox name="chkMentalTopo_6" align="left" width="30" field="stM6" text="6" fontSize="10" visible="false"/>
                                         <checkBox name="chkMentalTopo_7" align="left" width="30" field="stM7" text="7" fontSize="10" visible="false"/>
                                         <checkBox name="chkMentalTopo_8" align="left" width="30" field="stM8" text="8" fontSize="10" visible="false"/>
                                     </layout>
-                                    <layout align="top" height="34" margins="{bottom=6}"><label text="Consequência Suave" align="left" width="150" fontSize="11" fontColor="#b9151f" vertTextAlign="center"/><edit align="client" field="cons_suave" fontSize="12"/></layout>
-                                    <layout align="top" height="34" name="rowConsCSExtraTopo" margins="{bottom=6}"><label text="Consequência Suave extra" align="left" width="150" fontSize="11" fontColor="#b9151f" vertTextAlign="center"/><edit align="client" field="cons_suaveX" fontSize="12"/></layout>
-                                    <layout align="top" height="34" margins="{bottom=6}"><label text="Consequência Moderada" align="left" width="150" fontSize="11" fontColor="#b9151f" vertTextAlign="center"/><edit align="client" field="cons_moderada" fontSize="12"/></layout>
-                                    <layout align="top" height="34"><label text="Consequência Grave" align="left" width="150" fontSize="11" fontColor="#b9151f" vertTextAlign="center"/><edit align="client" field="cons_severa" fontSize="12"/></layout>
+                                    <layout align="top" height="34" margins="{bottom=6}"><label text="CONSEQUÊNCIA SUAVE [2]" align="left" width="180" fontSize="11" fontColor="#D1A04B" fontStyle="bold" vertTextAlign="center"/><edit align="client" field="cons_suave" fontSize="12"/></layout>
+                                    <layout align="top" height="34" name="rowConsCSExtraTopo" margins="{bottom=6}"><label text="CONSEQUÊNCIA SUAVE+ [2]" align="left" width="180" fontSize="11" fontColor="#D1A04B" fontStyle="bold" vertTextAlign="center"/><edit align="client" field="cons_suaveX" fontSize="12"/></layout>
+                                    <layout align="top" height="34" margins="{bottom=6}"><label text="CONSEQUÊNCIA MODERADA [4]" align="left" width="180" fontSize="11" fontColor="#D27649" fontStyle="bold" vertTextAlign="center"/><edit align="client" field="cons_moderada" fontSize="12"/></layout>
+                                    <layout align="top" height="34"><label text="CONSEQUÊNCIA GRAVE [6]" align="left" width="180" fontSize="11" fontColor="#C95A63" fontStyle="bold" vertTextAlign="center"/><edit align="client" field="cons_severa" fontSize="12"/></layout>
+                                </layout>
+                                </layout>
                                 </layout>
                             </layout>
 
                             <!-- Aspectos -->
-                            <label text="Aspectos" align="top" height="24"
-                                   fontSize="13" fontColor="Gray" fontStyle="bold"
-                                   margins="{bottom=6}"/>
+                            <layout align="top" height="24" margins="{bottom=6}">
+                                <rectangle align="left" width="4" color="#B9151F"/>
+                                <label text="ASPECTOS" align="client" fontSize="14" fontColor="#E4C2C6"
+                                       fontStyle="bold" margins="{left=8}" vertTextAlign="center"/>
+                            </layout>
 
                             <label text="Conceito" align="top" height="16"
                                    fontSize="10" fontColor="#b9151f" fontStyle="bold"/>
@@ -483,80 +555,98 @@
                             <edit align="top" height="28" field="dificuldade"
                                   fontSize="13" margins="{bottom=8}"/>
 
-                            <layout align="top" height="34" name="rowAspecto_1" margins="{bottom=5}">
+                            <layout align="top" height="44" name="rowAspecto_1" margins="{bottom=5}">
                                 <label text="Aspecto" align="top" height="16" fontSize="10" fontColor="Gray" fontStyle="bold"/>
                                 <edit align="client" field="aspecto1" fontSize="13"/>
                             </layout>
-                            <layout align="top" height="34" name="rowAspecto_2" margins="{bottom=5}">
+                            <layout align="top" height="44" name="rowAspecto_2" margins="{bottom=5}">
                                 <label text="Aspecto" align="top" height="16" fontSize="10" fontColor="Gray" fontStyle="bold"/>
                                 <edit align="client" field="aspecto2" fontSize="13"/>
                             </layout>
-                            <layout align="top" height="34" name="rowAspecto_3" margins="{bottom=5}">
+                            <layout align="top" height="44" name="rowAspecto_3" margins="{bottom=5}">
                                 <label text="Aspecto" align="top" height="16" fontSize="10" fontColor="Gray" fontStyle="bold"/>
                                 <edit align="client" field="aspecto3" fontSize="13"/>
                             </layout>
-                            <layout align="top" height="34" name="rowAspecto_4" visible="false" margins="{bottom=5}">
+                            <layout align="top" height="44" name="rowAspecto_4" visible="false" margins="{bottom=5}">
                                 <label text="Aspecto" align="top" height="16" fontSize="10" fontColor="Gray" fontStyle="bold"/>
                                 <edit align="client" field="aspecto4" fontSize="13"/>
                             </layout>
-                            <layout align="top" height="34" name="rowAspecto_5" visible="false" margins="{bottom=5}">
+                            <layout align="top" height="44" name="rowAspecto_5" visible="false" margins="{bottom=5}">
                                 <label text="Aspecto" align="top" height="16" fontSize="10" fontColor="Gray" fontStyle="bold"/>
                                 <edit align="client" field="aspecto5" fontSize="13"/>
                             </layout>
-                            <layout align="top" height="34" name="rowAspecto_6" visible="false" margins="{bottom=5}">
+                            <layout align="top" height="44" name="rowAspecto_6" visible="false" margins="{bottom=5}">
                                 <label text="Aspecto" align="top" height="16" fontSize="10" fontColor="Gray" fontStyle="bold"/>
                                 <edit align="client" field="aspecto6" fontSize="13"/>
                             </layout>
-                            <layout align="top" height="34" name="rowAspecto_7" visible="false" margins="{bottom=5}">
+                            <layout align="top" height="44" name="rowAspecto_7" visible="false" margins="{bottom=5}">
                                 <label text="Aspecto" align="top" height="16" fontSize="10" fontColor="Gray" fontStyle="bold"/>
                                 <edit align="client" field="aspecto7" fontSize="13"/>
                             </layout>
 
+                            </layout>
                         </layout>
                     </layout>
 
                     <!-- ── Façanhas e Extras ── -->
                     <layout name="listaPericiasFacanhas" align="top" height="600" margins="{bottom=10}">
                         <layout align="left" width="520" margins="{right=12}">
+                            <rectangle name="cardPericias" align="client" color="#242328" strokeColor="#4F2930" strokeSize="1"/>
+                            <layout name="paddingPericias" align="client" margins="{left=8, right=8, top=8, bottom=8}">
                             <layout align="top" height="30" margins="{bottom=6}">
-                                <label text="Perícias" align="left" width="130" fontSize="13" fontColor="Gray" fontStyle="bold" vertTextAlign="center"/>
+                                <rectangle align="left" width="4" color="#B9151F"/>
+                                <label text="PERÍCIAS" align="left" width="130" fontSize="14" fontColor="#E4C2C6" fontStyle="bold" vertTextAlign="center" margins="{left=8}"/>
                                 <button align="right" width="116" height="30" text="+ Adicionar Perícia" fontSize="11" onClick="adicionarPericia()"/>
                             </layout>
-                            <layout align="top" height="52" name="rowPericia_1" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia1_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(1)" margins="{right=4}"/><edit name="pericia_1_nome" align="client" field="pericia1_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_1_bonus" align="right" width="52" field="pericia1_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_1_nome.text, self.pericia_1_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(1)" margins="{right=4}"/></layout><label name="nivelPericia_1" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
-                            <layout align="top" height="52" name="rowPericia_2" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia2_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(2)" margins="{right=4}"/><edit name="pericia_2_nome" align="client" field="pericia2_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_2_bonus" align="right" width="52" field="pericia2_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_2_nome.text, self.pericia_2_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(2)" margins="{right=4}"/></layout><label name="nivelPericia_2" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
-                            <layout align="top" height="52" name="rowPericia_3" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia3_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(3)" margins="{right=4}"/><edit name="pericia_3_nome" align="client" field="pericia3_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_3_bonus" align="right" width="52" field="pericia3_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_3_nome.text, self.pericia_3_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(3)" margins="{right=4}"/></layout><label name="nivelPericia_3" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
-                            <layout align="top" height="52" name="rowPericia_4" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia4_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(4)" margins="{right=4}"/><edit name="pericia_4_nome" align="client" field="pericia4_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_4_bonus" align="right" width="52" field="pericia4_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_4_nome.text, self.pericia_4_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(4)" margins="{right=4}"/></layout><label name="nivelPericia_4" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
-                            <layout align="top" height="52" name="rowPericia_5" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia5_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(5)" margins="{right=4}"/><edit name="pericia_5_nome" align="client" field="pericia5_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_5_bonus" align="right" width="52" field="pericia5_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_5_nome.text, self.pericia_5_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(5)" margins="{right=4}"/></layout><label name="nivelPericia_5" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
-                            <layout align="top" height="52" name="rowPericia_6" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia6_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(6)" margins="{right=4}"/><edit name="pericia_6_nome" align="client" field="pericia6_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_6_bonus" align="right" width="52" field="pericia6_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_6_nome.text, self.pericia_6_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(6)" margins="{right=4}"/></layout><label name="nivelPericia_6" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
-                            <layout align="top" height="52" name="rowPericia_7" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia7_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(7)" margins="{right=4}"/><edit name="pericia_7_nome" align="client" field="pericia7_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_7_bonus" align="right" width="52" field="pericia7_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_7_nome.text, self.pericia_7_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(7)" margins="{right=4}"/></layout><label name="nivelPericia_7" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
-                            <layout align="top" height="52" name="rowPericia_8" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia8_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(8)" margins="{right=4}"/><edit name="pericia_8_nome" align="client" field="pericia8_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_8_bonus" align="right" width="52" field="pericia8_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_8_nome.text, self.pericia_8_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(8)" margins="{right=4}"/></layout><label name="nivelPericia_8" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
-                            <layout align="top" height="52" name="rowPericia_9" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia9_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(9)" margins="{right=4}"/><edit name="pericia_9_nome" align="client" field="pericia9_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_9_bonus" align="right" width="52" field="pericia9_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_9_nome.text, self.pericia_9_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(9)" margins="{right=4}"/></layout><label name="nivelPericia_9" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
-                            <layout align="top" height="52" name="rowPericia_10" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia10_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(10)" margins="{right=4}"/><edit name="pericia_10_nome" align="client" field="pericia10_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_10_bonus" align="right" width="52" field="pericia10_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_10_nome.text, self.pericia_10_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(10)" margins="{right=4}"/></layout><label name="nivelPericia_10" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
-                            <layout align="top" height="52" name="rowPericia_11" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia11_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(11)" margins="{right=4}"/><edit name="pericia_11_nome" align="client" field="pericia11_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_11_bonus" align="right" width="52" field="pericia11_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_11_nome.text, self.pericia_11_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(11)" margins="{right=4}"/></layout><label name="nivelPericia_11" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
-                            <layout align="top" height="52" name="rowPericia_12" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia12_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(12)" margins="{right=4}"/><edit name="pericia_12_nome" align="client" field="pericia12_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_12_bonus" align="right" width="52" field="pericia12_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_12_nome.text, self.pericia_12_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(12)" margins="{right=4}"/></layout><label name="nivelPericia_12" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
-                            <layout align="top" height="52" name="rowPericia_13" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia13_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(13)" margins="{right=4}"/><edit name="pericia_13_nome" align="client" field="pericia13_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_13_bonus" align="right" width="52" field="pericia13_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_13_nome.text, self.pericia_13_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(13)" margins="{right=4}"/></layout><label name="nivelPericia_13" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
-                            <layout align="top" height="52" name="rowPericia_14" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia14_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(14)" margins="{right=4}"/><edit name="pericia_14_nome" align="client" field="pericia14_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_14_bonus" align="right" width="52" field="pericia14_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_14_nome.text, self.pericia_14_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(14)" margins="{right=4}"/></layout><label name="nivelPericia_14" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
-                            <layout align="top" height="52" name="rowPericia_15" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia15_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(15)" margins="{right=4}"/><edit name="pericia_15_nome" align="client" field="pericia15_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_15_bonus" align="right" width="52" field="pericia15_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_15_nome.text, self.pericia_15_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(15)" margins="{right=4}"/></layout><label name="nivelPericia_15" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
-                            <layout align="top" height="52" name="rowPericia_16" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia16_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(16)" margins="{right=4}"/><edit name="pericia_16_nome" align="client" field="pericia16_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_16_bonus" align="right" width="52" field="pericia16_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_16_nome.text, self.pericia_16_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(16)" margins="{right=4}"/></layout><label name="nivelPericia_16" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="16" margins="{bottom=4}">
+                                <label text="Valor" align="left" width="52" fontSize="9" fontColor="#C97A85" fontStyle="bold" horzTextAlign="center" margins="{right=4}"/>
+                                <label text="Nome" align="client" fontSize="9" fontColor="#C97A85" fontStyle="bold" margins="{right=4}"/>
+                                <layout align="right" width="126" margins="{right=4}">
+                                    <label text="Bônus" align="left" width="52" fontSize="9" fontColor="#C97A85" fontStyle="bold" horzTextAlign="center"/>
+                                    <label text="Rolar" align="left" width="42" fontSize="9" fontColor="#C97A85" fontStyle="bold" horzTextAlign="center"/>
+                                    <label text="" align="client"/>
+                                </layout>
+                            </layout>
+                            <layout align="top" height="52" name="rowPericia_1" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia1_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(1)" margins="{right=4}"/><edit name="pericia_1_nome" align="client" field="pericia1_nome" hint="Nome" fontSize="13" margins="{right=4}"/><layout align="right" width="126" margins="{right=4}"><edit align="left" width="52" field="pericia1_bonus" hint="Bônus" fontSize="12" horzTextAlign="center"/><button align="left" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_1_nome.text, self.pericia_1_bonus.text)"/><button align="client" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerPericia(1)"/></layout></layout><label name="nivelPericia_1" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_2" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia2_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(2)" margins="{right=4}"/><edit name="pericia_2_nome" align="client" field="pericia2_nome" hint="Nome" fontSize="13" margins="{right=4}"/><layout align="right" width="126" margins="{right=4}"><edit align="left" width="52" field="pericia2_bonus" hint="Bônus" fontSize="12" horzTextAlign="center"/><button align="left" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_2_nome.text, self.pericia_2_bonus.text)"/><button align="client" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerPericia(2)"/></layout></layout><label name="nivelPericia_2" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_3" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia3_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(3)" margins="{right=4}"/><edit name="pericia_3_nome" align="client" field="pericia3_nome" hint="Nome" fontSize="13" margins="{right=4}"/><layout align="right" width="126" margins="{right=4}"><edit align="left" width="52" field="pericia3_bonus" hint="Bônus" fontSize="12" horzTextAlign="center"/><button align="left" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_3_nome.text, self.pericia_3_bonus.text)"/><button align="client" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerPericia(3)"/></layout></layout><label name="nivelPericia_3" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_4" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia4_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(4)" margins="{right=4}"/><edit name="pericia_4_nome" align="client" field="pericia4_nome" hint="Nome" fontSize="13" margins="{right=4}"/><layout align="right" width="126" margins="{right=4}"><edit align="left" width="52" field="pericia4_bonus" hint="Bônus" fontSize="12" horzTextAlign="center"/><button align="left" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_4_nome.text, self.pericia_4_bonus.text)"/><button align="client" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerPericia(4)"/></layout></layout><label name="nivelPericia_4" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_5" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia5_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(5)" margins="{right=4}"/><edit name="pericia_5_nome" align="client" field="pericia5_nome" hint="Nome" fontSize="13" margins="{right=4}"/><layout align="right" width="126" margins="{right=4}"><edit align="left" width="52" field="pericia5_bonus" hint="Bônus" fontSize="12" horzTextAlign="center"/><button align="left" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_5_nome.text, self.pericia_5_bonus.text)"/><button align="client" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerPericia(5)"/></layout></layout><label name="nivelPericia_5" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_6" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia6_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(6)" margins="{right=4}"/><edit name="pericia_6_nome" align="client" field="pericia6_nome" hint="Nome" fontSize="13" margins="{right=4}"/><layout align="right" width="126" margins="{right=4}"><edit align="left" width="52" field="pericia6_bonus" hint="Bônus" fontSize="12" horzTextAlign="center"/><button align="left" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_6_nome.text, self.pericia_6_bonus.text)"/><button align="client" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerPericia(6)"/></layout></layout><label name="nivelPericia_6" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_7" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia7_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(7)" margins="{right=4}"/><edit name="pericia_7_nome" align="client" field="pericia7_nome" hint="Nome" fontSize="13" margins="{right=4}"/><layout align="right" width="126" margins="{right=4}"><edit align="left" width="52" field="pericia7_bonus" hint="Bônus" fontSize="12" horzTextAlign="center"/><button align="left" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_7_nome.text, self.pericia_7_bonus.text)"/><button align="client" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerPericia(7)"/></layout></layout><label name="nivelPericia_7" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_8" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia8_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(8)" margins="{right=4}"/><edit name="pericia_8_nome" align="client" field="pericia8_nome" hint="Nome" fontSize="13" margins="{right=4}"/><layout align="right" width="126" margins="{right=4}"><edit align="left" width="52" field="pericia8_bonus" hint="Bônus" fontSize="12" horzTextAlign="center"/><button align="left" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_8_nome.text, self.pericia_8_bonus.text)"/><button align="client" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerPericia(8)"/></layout></layout><label name="nivelPericia_8" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_9" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia9_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(9)" margins="{right=4}"/><edit name="pericia_9_nome" align="client" field="pericia9_nome" hint="Nome" fontSize="13" margins="{right=4}"/><layout align="right" width="126" margins="{right=4}"><edit align="left" width="52" field="pericia9_bonus" hint="Bônus" fontSize="12" horzTextAlign="center"/><button align="left" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_9_nome.text, self.pericia_9_bonus.text)"/><button align="client" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerPericia(9)"/></layout></layout><label name="nivelPericia_9" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_10" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia10_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(10)" margins="{right=4}"/><edit name="pericia_10_nome" align="client" field="pericia10_nome" hint="Nome" fontSize="13" margins="{right=4}"/><layout align="right" width="126" margins="{right=4}"><edit align="left" width="52" field="pericia10_bonus" hint="Bônus" fontSize="12" horzTextAlign="center"/><button align="left" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_10_nome.text, self.pericia_10_bonus.text)"/><button align="client" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerPericia(10)"/></layout></layout><label name="nivelPericia_10" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_11" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia11_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(11)" margins="{right=4}"/><edit name="pericia_11_nome" align="client" field="pericia11_nome" hint="Nome" fontSize="13" margins="{right=4}"/><layout align="right" width="126" margins="{right=4}"><edit align="left" width="52" field="pericia11_bonus" hint="Bônus" fontSize="12" horzTextAlign="center"/><button align="left" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_11_nome.text, self.pericia_11_bonus.text)"/><button align="client" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerPericia(11)"/></layout></layout><label name="nivelPericia_11" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_12" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia12_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(12)" margins="{right=4}"/><edit name="pericia_12_nome" align="client" field="pericia12_nome" hint="Nome" fontSize="13" margins="{right=4}"/><layout align="right" width="126" margins="{right=4}"><edit align="left" width="52" field="pericia12_bonus" hint="Bônus" fontSize="12" horzTextAlign="center"/><button align="left" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_12_nome.text, self.pericia_12_bonus.text)"/><button align="client" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerPericia(12)"/></layout></layout><label name="nivelPericia_12" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_13" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia13_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(13)" margins="{right=4}"/><edit name="pericia_13_nome" align="client" field="pericia13_nome" hint="Nome" fontSize="13" margins="{right=4}"/><layout align="right" width="126" margins="{right=4}"><edit align="left" width="52" field="pericia13_bonus" hint="Bônus" fontSize="12" horzTextAlign="center"/><button align="left" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_13_nome.text, self.pericia_13_bonus.text)"/><button align="client" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerPericia(13)"/></layout></layout><label name="nivelPericia_13" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_14" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia14_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(14)" margins="{right=4}"/><edit name="pericia_14_nome" align="client" field="pericia14_nome" hint="Nome" fontSize="13" margins="{right=4}"/><layout align="right" width="126" margins="{right=4}"><edit align="left" width="52" field="pericia14_bonus" hint="Bônus" fontSize="12" horzTextAlign="center"/><button align="left" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_14_nome.text, self.pericia_14_bonus.text)"/><button align="client" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerPericia(14)"/></layout></layout><label name="nivelPericia_14" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_15" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia15_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(15)" margins="{right=4}"/><edit name="pericia_15_nome" align="client" field="pericia15_nome" hint="Nome" fontSize="13" margins="{right=4}"/><layout align="right" width="126" margins="{right=4}"><edit align="left" width="52" field="pericia15_bonus" hint="Bônus" fontSize="12" horzTextAlign="center"/><button align="left" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_15_nome.text, self.pericia_15_bonus.text)"/><button align="client" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerPericia(15)"/></layout></layout><label name="nivelPericia_15" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_16" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia16_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(16)" margins="{right=4}"/><edit name="pericia_16_nome" align="client" field="pericia16_nome" hint="Nome" fontSize="13" margins="{right=4}"/><layout align="right" width="126" margins="{right=4}"><edit align="left" width="52" field="pericia16_bonus" hint="Bônus" fontSize="12" horzTextAlign="center"/><button align="left" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_16_nome.text, self.pericia_16_bonus.text)"/><button align="client" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerPericia(16)"/></layout></layout><label name="nivelPericia_16" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            </layout>
                         </layout>
                         <layout align="client" margins="{right=8}">
+                            <rectangle name="cardFacanhas" align="client" color="#242328" strokeColor="#4F2930" strokeSize="1"/>
+                            <layout name="paddingFacanhas" align="client" margins="{left=8, right=8, top=8, bottom=8}">
                             <layout align="top" height="30" margins="{bottom=6}">
-                                <label text="Façanhas" align="left" width="130"
-                                       fontSize="13" fontColor="Gray" fontStyle="bold" vertTextAlign="center"/>
+                                <rectangle align="left" width="4" color="#B9151F"/>
+                                <label text="FAÇANHAS" align="left" width="130"
+                                       fontSize="14" fontColor="#E4C2C6" fontStyle="bold" vertTextAlign="center" margins="{left=8}"/>
                                 <button align="right" width="116" height="30" text="+ Adicionar"
                                         fontSize="11" onClick="adicionarFacanha()"/>
                             </layout>
                             <layout align="client">
-                                <layout align="top" height="28" name="rowFacanha_1" margins="{bottom=4}"><edit align="client" field="facanha1" fontSize="13" margins="{right=6}"/><button align="right" width="80" text="Remover" fontSize="10" onClick="removerFacanha(1)"/></layout>
-                                <layout align="top" height="28" name="rowFacanha_2" margins="{bottom=4}"><edit align="client" field="facanha2" fontSize="13" margins="{right=6}"/><button align="right" width="80" text="Remover" fontSize="10" onClick="removerFacanha(2)"/></layout>
-                                <layout align="top" height="28" name="rowFacanha_3" margins="{bottom=4}"><edit align="client" field="facanha3" fontSize="13" margins="{right=6}"/><button align="right" width="80" text="Remover" fontSize="10" onClick="removerFacanha(3)"/></layout>
-                                <layout align="top" height="28" name="rowFacanha_4" visible="false" margins="{bottom=4}"><edit align="client" field="facanha4" fontSize="13" margins="{right=6}"/><button align="right" width="80" text="Remover" fontSize="10" onClick="removerFacanha(4)"/></layout>
-                                <layout align="top" height="28" name="rowFacanha_5" visible="false" margins="{bottom=4}"><edit align="client" field="facanha5" fontSize="13" margins="{right=6}"/><button align="right" width="80" text="Remover" fontSize="10" onClick="removerFacanha(5)"/></layout>
-                                <layout align="top" height="28" name="rowFacanha_6" visible="false" margins="{bottom=4}"><edit align="client" field="facanha6" fontSize="13" margins="{right=6}"/><button align="right" width="80" text="Remover" fontSize="10" onClick="removerFacanha(6)"/></layout>
-                                <layout align="top" height="28" name="rowFacanha_7" visible="false" margins="{bottom=4}"><edit align="client" field="facanha7" fontSize="13" margins="{right=6}"/><button align="right" width="80" text="Remover" fontSize="10" onClick="removerFacanha(7)"/></layout>
-                                <layout align="top" height="28" name="rowFacanha_8" visible="false" margins="{bottom=4}"><edit align="client" field="facanha8" fontSize="13" margins="{right=6}"/><button align="right" width="80" text="Remover" fontSize="10" onClick="removerFacanha(8)"/></layout>
-                                <layout align="top" height="28" name="rowFacanha_9" visible="false" margins="{bottom=4}"><edit align="client" field="facanha9" fontSize="13" margins="{right=6}"/><button align="right" width="80" text="Remover" fontSize="10" onClick="removerFacanha(9)"/></layout>
-                                <layout align="top" height="28" name="rowFacanha_10" visible="false"><edit align="client" field="facanha10" fontSize="13" margins="{right=6}"/><button align="right" width="80" text="Remover" fontSize="10" onClick="removerFacanha(10)"/></layout>
+                                <layout align="top" height="28" name="rowFacanha_1" margins="{bottom=4}"><label text="01" align="left" width="28" fontSize="10" fontColor="#C97A85" fontStyle="bold" vertTextAlign="center"/><edit align="client" field="facanha1" fontSize="13" margins="{right=6}"/><button align="right" width="32" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerFacanha(1)"/></layout>
+                                <layout align="top" height="28" name="rowFacanha_2" margins="{bottom=4}"><label text="02" align="left" width="28" fontSize="10" fontColor="#C97A85" fontStyle="bold" vertTextAlign="center"/><edit align="client" field="facanha2" fontSize="13" margins="{right=6}"/><button align="right" width="32" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerFacanha(2)"/></layout>
+                                <layout align="top" height="28" name="rowFacanha_3" margins="{bottom=4}"><label text="03" align="left" width="28" fontSize="10" fontColor="#C97A85" fontStyle="bold" vertTextAlign="center"/><edit align="client" field="facanha3" fontSize="13" margins="{right=6}"/><button align="right" width="32" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerFacanha(3)"/></layout>
+                                <layout align="top" height="28" name="rowFacanha_4" visible="false" margins="{bottom=4}"><label text="04" align="left" width="28" fontSize="10" fontColor="#C97A85" fontStyle="bold" vertTextAlign="center"/><edit align="client" field="facanha4" fontSize="13" margins="{right=6}"/><button align="right" width="32" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerFacanha(4)"/></layout>
+                                <layout align="top" height="28" name="rowFacanha_5" visible="false" margins="{bottom=4}"><label text="05" align="left" width="28" fontSize="10" fontColor="#C97A85" fontStyle="bold" vertTextAlign="center"/><edit align="client" field="facanha5" fontSize="13" margins="{right=6}"/><button align="right" width="32" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerFacanha(5)"/></layout>
+                                <layout align="top" height="28" name="rowFacanha_6" visible="false" margins="{bottom=4}"><label text="06" align="left" width="28" fontSize="10" fontColor="#C97A85" fontStyle="bold" vertTextAlign="center"/><edit align="client" field="facanha6" fontSize="13" margins="{right=6}"/><button align="right" width="32" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerFacanha(6)"/></layout>
+                                <layout align="top" height="28" name="rowFacanha_7" visible="false" margins="{bottom=4}"><label text="07" align="left" width="28" fontSize="10" fontColor="#C97A85" fontStyle="bold" vertTextAlign="center"/><edit align="client" field="facanha7" fontSize="13" margins="{right=6}"/><button align="right" width="32" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerFacanha(7)"/></layout>
+                                <layout align="top" height="28" name="rowFacanha_8" visible="false" margins="{bottom=4}"><label text="08" align="left" width="28" fontSize="10" fontColor="#C97A85" fontStyle="bold" vertTextAlign="center"/><edit align="client" field="facanha8" fontSize="13" margins="{right=6}"/><button align="right" width="32" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerFacanha(8)"/></layout>
+                                <layout align="top" height="28" name="rowFacanha_9" visible="false" margins="{bottom=4}"><label text="09" align="left" width="28" fontSize="10" fontColor="#C97A85" fontStyle="bold" vertTextAlign="center"/><edit align="client" field="facanha9" fontSize="13" margins="{right=6}"/><button align="right" width="32" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerFacanha(9)"/></layout>
+                                <layout align="top" height="28" name="rowFacanha_10" visible="false"><label text="10" align="left" width="28" fontSize="10" fontColor="#C97A85" fontStyle="bold" vertTextAlign="center"/><edit align="client" field="facanha10" fontSize="13" margins="{right=6}"/><button align="right" width="32" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Remover" onClick="removerFacanha(10)"/></layout>
+                            </layout>
                             </layout>
                         </layout>
                     </layout>
@@ -630,21 +720,32 @@
                     </layout>
 
                 </layout>
-            </scrollBox>
+                </scrollBox>
+            </layout>
         </tab>
 
         <!-- ══════════════════════════════════════════════════════════ -->
         <!-- ABA 2 — EXTRAS (detalhes)                                 -->
         <!-- ══════════════════════════════════════════════════════════ -->
         <tab title="Extras">
-            <scrollBox align="client">
-                <layout align="top" height="1700" margins="{left=10, right=10, top=10, bottom=10}">
-                    <button align="top" height="34" text="+ Adicionar Extra"
-                            fontSize="12" onClick="adicionarExtra()" margins="{bottom=10}"/>
+            <layout align="client">
+                <image name="texturaExtras" align="client" src="assets/fate-textura-grafite.png" style="stretch" opacity="0.12"/>
+                <scrollBox align="client">
+                <layout name="conteudoExtras" align="top" height="1700" margins="{left=10, right=10, top=10, bottom=10}">
+                    <layout align="top" height="30" margins="{bottom=8}">
+                        <rectangle align="left" width="4" color="#B9151F"/>
+                        <label text="EXTRAS" align="left" width="160" fontSize="14" fontColor="#E4C2C6"
+                               fontStyle="bold" margins="{left=8}" vertTextAlign="center"/>
+                        <button align="right" width="130" height="30" text="+ Adicionar Extra"
+                                fontSize="11" onClick="adicionarExtra()"/>
+                    </layout>
 
                     <layout align="top" height="240" name="rowExtraD_1" visible="false" margins="{bottom=12}">
-                        <label text="Nome" align="top" height="14" fontSize="10" fontColor="Gray"/><layout align="top" height="30" margins="{bottom=6}"><edit align="client" field="extraD1_nome" hint="Título" fontSize="13" margins="{right=6}"/><button align="right" width="90" text="Excluir" fontSize="11" onClick="removerExtra(1)"/></layout>
                         <layout align="client">
+                        <rectangle name="cardExtra1" align="client" color="#242328" strokeColor="#5A3038" strokeSize="1"/>
+                        <layout align="client">
+                        <label text="NOME DO EXTRA" align="top" height="14" fontSize="10" fontColor="#C97A85" fontStyle="bold" margins="{left=8, right=8, top=8}"/><layout align="top" height="30" margins="{left=8, right=8, bottom=6}"><edit align="client" field="extraD1_nome" hint="Título" fontSize="13" margins="{right=6}"/><button align="right" width="32" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Excluir" onClick="removerExtra(1)"/></layout>
+                        <layout align="client" margins="{left=8, right=8, bottom=8}">
                             <label text="Permissão" align="top" height="14" fontSize="10" fontColor="Gray"/>
                             <edit align="top" height="28" field="extraD1_perm" fontSize="12" margins="{bottom=6}"/>
                             <label text="Custo" align="top" height="14" fontSize="10" fontColor="Gray"/>
@@ -652,11 +753,16 @@
                             <layout align="top" height="18"><label text="Descrição" align="left" width="110" fontSize="10" fontColor="Gray"/><button align="right" width="100" text="Expandir" fontSize="10" onClick="alternarDescricaoExtra(1)"/></layout>
                             <textEditor align="client" field="extraD1_desc" fontSize="12"/>
                         </layout>
+                        </layout>
+                        </layout>
                     </layout>
 
                     <layout align="top" height="240" name="rowExtraD_2" visible="false" margins="{bottom=12}">
-                        <label text="Nome" align="top" height="14" fontSize="10" fontColor="Gray"/><layout align="top" height="30" margins="{bottom=6}"><edit align="client" field="extraD2_nome" hint="Título" fontSize="13" margins="{right=6}"/><button align="right" width="90" text="Excluir" fontSize="11" onClick="removerExtra(2)"/></layout>
                         <layout align="client">
+                        <rectangle name="cardExtra2" align="client" color="#242328" strokeColor="#5A3038" strokeSize="1"/>
+                        <layout align="client">
+                        <label text="NOME DO EXTRA" align="top" height="14" fontSize="10" fontColor="#C97A85" fontStyle="bold" margins="{left=8, right=8, top=8}"/><layout align="top" height="30" margins="{left=8, right=8, bottom=6}"><edit align="client" field="extraD2_nome" hint="Título" fontSize="13" margins="{right=6}"/><button align="right" width="32" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Excluir" onClick="removerExtra(2)"/></layout>
+                        <layout align="client" margins="{left=8, right=8, bottom=8}">
                             <label text="Permissão" align="top" height="14" fontSize="10" fontColor="Gray"/>
                             <edit align="top" height="28" field="extraD2_perm" fontSize="12" margins="{bottom=6}"/>
                             <label text="Custo" align="top" height="14" fontSize="10" fontColor="Gray"/>
@@ -664,11 +770,16 @@
                             <layout align="top" height="18"><label text="Descrição" align="left" width="110" fontSize="10" fontColor="Gray"/><button align="right" width="100" text="Expandir" fontSize="10" onClick="alternarDescricaoExtra(2)"/></layout>
                             <textEditor align="client" field="extraD2_desc" fontSize="12"/>
                         </layout>
+                        </layout>
+                        </layout>
                     </layout>
 
                     <layout align="top" height="240" name="rowExtraD_3" visible="false" margins="{bottom=12}">
-                        <label text="Nome" align="top" height="14" fontSize="10" fontColor="Gray"/><layout align="top" height="30" margins="{bottom=6}"><edit align="client" field="extraD3_nome" hint="Título" fontSize="13" margins="{right=6}"/><button align="right" width="90" text="Excluir" fontSize="11" onClick="removerExtra(3)"/></layout>
                         <layout align="client">
+                        <rectangle name="cardExtra3" align="client" color="#242328" strokeColor="#5A3038" strokeSize="1"/>
+                        <layout align="client">
+                        <label text="NOME DO EXTRA" align="top" height="14" fontSize="10" fontColor="#C97A85" fontStyle="bold" margins="{left=8, right=8, top=8}"/><layout align="top" height="30" margins="{left=8, right=8, bottom=6}"><edit align="client" field="extraD3_nome" hint="Título" fontSize="13" margins="{right=6}"/><button align="right" width="32" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Excluir" onClick="removerExtra(3)"/></layout>
+                        <layout align="client" margins="{left=8, right=8, bottom=8}">
                             <label text="Permissão" align="top" height="14" fontSize="10" fontColor="Gray"/>
                             <edit align="top" height="28" field="extraD3_perm" fontSize="12" margins="{bottom=6}"/>
                             <label text="Custo" align="top" height="14" fontSize="10" fontColor="Gray"/>
@@ -676,11 +787,16 @@
                             <layout align="top" height="18"><label text="Descrição" align="left" width="110" fontSize="10" fontColor="Gray"/><button align="right" width="100" text="Expandir" fontSize="10" onClick="alternarDescricaoExtra(3)"/></layout>
                             <textEditor align="client" field="extraD3_desc" fontSize="12"/>
                         </layout>
+                        </layout>
+                        </layout>
                     </layout>
 
                     <layout align="top" height="240" name="rowExtraD_4" visible="false" margins="{bottom=12}">
-                        <label text="Nome" align="top" height="14" fontSize="10" fontColor="Gray"/><layout align="top" height="30" margins="{bottom=6}"><edit align="client" field="extraD4_nome" hint="Título" fontSize="13" margins="{right=6}"/><button align="right" width="90" text="Excluir" fontSize="11" onClick="removerExtra(4)"/></layout>
                         <layout align="client">
+                        <rectangle name="cardExtra4" align="client" color="#242328" strokeColor="#5A3038" strokeSize="1"/>
+                        <layout align="client">
+                        <label text="NOME DO EXTRA" align="top" height="14" fontSize="10" fontColor="#C97A85" fontStyle="bold" margins="{left=8, right=8, top=8}"/><layout align="top" height="30" margins="{left=8, right=8, bottom=6}"><edit align="client" field="extraD4_nome" hint="Título" fontSize="13" margins="{right=6}"/><button align="right" width="32" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Excluir" onClick="removerExtra(4)"/></layout>
+                        <layout align="client" margins="{left=8, right=8, bottom=8}">
                             <label text="Permissão" align="top" height="14" fontSize="10" fontColor="Gray"/>
                             <edit align="top" height="28" field="extraD4_perm" fontSize="12" margins="{bottom=6}"/>
                             <label text="Custo" align="top" height="14" fontSize="10" fontColor="Gray"/>
@@ -688,11 +804,16 @@
                             <label text="Descrição" align="top" height="14" fontSize="10" fontColor="Gray"/>
                             <textEditor align="client" field="extraD4_desc" fontSize="12"/>
                         </layout>
+                        </layout>
+                        </layout>
                     </layout>
 
                     <layout align="top" height="240" name="rowExtraD_5" visible="false" margins="{bottom=12}">
-                        <label text="Nome" align="top" height="14" fontSize="10" fontColor="Gray"/><layout align="top" height="30" margins="{bottom=6}"><edit align="client" field="extraD5_nome" hint="Título" fontSize="13" margins="{right=6}"/><button align="right" width="90" text="Excluir" fontSize="11" onClick="removerExtra(5)"/></layout>
                         <layout align="client">
+                        <rectangle name="cardExtra5" align="client" color="#242328" strokeColor="#5A3038" strokeSize="1"/>
+                        <layout align="client">
+                        <label text="NOME DO EXTRA" align="top" height="14" fontSize="10" fontColor="#C97A85" fontStyle="bold" margins="{left=8, right=8, top=8}"/><layout align="top" height="30" margins="{left=8, right=8, bottom=6}"><edit align="client" field="extraD5_nome" hint="Título" fontSize="13" margins="{right=6}"/><button align="right" width="32" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Excluir" onClick="removerExtra(5)"/></layout>
+                        <layout align="client" margins="{left=8, right=8, bottom=8}">
                             <label text="Permissão" align="top" height="14" fontSize="10" fontColor="Gray"/>
                             <edit align="top" height="28" field="extraD5_perm" fontSize="12" margins="{bottom=6}"/>
                             <label text="Custo" align="top" height="14" fontSize="10" fontColor="Gray"/>
@@ -700,11 +821,16 @@
                             <label text="Descrição" align="top" height="14" fontSize="10" fontColor="Gray"/>
                             <textEditor align="client" field="extraD5_desc" fontSize="12"/>
                         </layout>
+                        </layout>
+                        </layout>
                     </layout>
 
                     <layout align="top" height="240" name="rowExtraD_6" visible="false">
-                        <label text="Nome" align="top" height="14" fontSize="10" fontColor="Gray"/><layout align="top" height="30" margins="{bottom=6}"><edit align="client" field="extraD6_nome" hint="Título" fontSize="13" margins="{right=6}"/><button align="right" width="90" text="Excluir" fontSize="11" onClick="removerExtra(6)"/></layout>
                         <layout align="client">
+                        <rectangle name="cardExtra6" align="client" color="#242328" strokeColor="#5A3038" strokeSize="1"/>
+                        <layout align="client">
+                        <label text="NOME DO EXTRA" align="top" height="14" fontSize="10" fontColor="#C97A85" fontStyle="bold" margins="{left=8, right=8, top=8}"/><layout align="top" height="30" margins="{left=8, right=8, bottom=6}"><edit align="client" field="extraD6_nome" hint="Título" fontSize="13" margins="{right=6}"/><button align="right" width="32" text="X" fontSize="14" fontColor="#C95A63" fontStyle="bold" hint="Excluir" onClick="removerExtra(6)"/></layout>
+                        <layout align="client" margins="{left=8, right=8, bottom=8}">
                             <label text="Permissão" align="top" height="14" fontSize="10" fontColor="Gray"/>
                             <edit align="top" height="28" field="extraD6_perm" fontSize="12" margins="{bottom=6}"/>
                             <label text="Custo" align="top" height="14" fontSize="10" fontColor="Gray"/>
@@ -712,10 +838,13 @@
                             <label text="Descrição" align="top" height="14" fontSize="10" fontColor="Gray"/>
                             <textEditor align="client" field="extraD6_desc" fontSize="12"/>
                         </layout>
+                        </layout>
+                        </layout>
                     </layout>
 
                 </layout>
-            </scrollBox>
+                </scrollBox>
+            </layout>
         </tab>
 
         <!-- ══════════════════════════════════════════════════════════ -->
@@ -724,10 +853,19 @@
 
 
         <tab title="Pessoal">
-            <scrollBox align="client">
-                <layout align="top" height="1110" margins="{left=10, right=10, top=10, bottom=10}">
+            <layout align="client">
+                <image name="texturaPessoal" align="client" src="assets/fate-textura-grafite.png" style="stretch" opacity="0.12"/>
+                <scrollBox align="client">
+                <layout name="conteudoPessoal" align="top" height="1110" margins="{left=10, right=10, top=10, bottom=10}">
 
-                    <label text="IDENTIFICAÇÃO" align="top" height="22" fontSize="13" fontColor="#b9151f" fontStyle="bold" margins="{bottom=6}"/>
+                    <layout align="top" height="210" margins="{bottom=12}">
+                    <layout align="client">
+                    <rectangle name="cardPessoalIdent" align="client" color="#242328" strokeColor="#4F2930" strokeSize="1"/>
+                    <layout align="client" margins="{left=8, right=8, top=8, bottom=8}">
+                    <layout align="top" height="22" margins="{bottom=6}">
+                        <rectangle align="left" width="4" color="#B9151F"/>
+                        <label text="IDENTIFICAÇÃO" align="client" fontSize="14" fontColor="#E4C2C6" fontStyle="bold" margins="{left=8}" vertTextAlign="center"/>
+                    </layout>
                     <layout align="top" height="54" margins="{bottom=6}">
                         <layout align="left" width="380" margins="{right=4}"><label text="Nome" align="top" height="18" fontSize="11" fontColor="Gray"/><edit align="client" field="nome" fontSize="13"/></layout>
                         <layout align="client" margins="{left=4}"><label text="Nome alternativo / Alcunha" align="top" height="18" fontSize="11" fontColor="Gray"/><edit align="client" field="nomeAlternativo" fontSize="13"/></layout>
@@ -742,8 +880,18 @@
                         <layout align="left" width="260" margins="{left=4, right=4}"><label text="Origem" align="top" height="18" fontSize="11" fontColor="Gray"/><edit align="client" field="origem" fontSize="13"/></layout>
                         <layout align="client" margins="{left=4}"><label text="Afiliação" align="top" height="18" fontSize="11" fontColor="Gray"/><edit align="client" field="afiliacao" fontSize="13"/></layout>
                     </layout>
+                    </layout>
+                    </layout>
+                    </layout>
 
-                    <label text="DESCRIÇÃO DO PERSONAGEM" align="top" height="22" fontSize="13" fontColor="#b9151f" fontStyle="bold" margins="{bottom=6}"/>
+                    <layout name="secaoDescricaoPessoal" align="top" height="420">
+                    <layout align="client">
+                    <rectangle name="cardPessoalDescricao" align="client" color="#242328" strokeColor="#4F2930" strokeSize="1"/>
+                    <layout align="client" margins="{left=8, right=8, top=8, bottom=8}">
+                    <layout align="top" height="22" margins="{bottom=6}">
+                        <rectangle align="left" width="4" color="#B9151F"/>
+                        <label text="DESCRIÇÃO DO PERSONAGEM" align="client" fontSize="14" fontColor="#E4C2C6" fontStyle="bold" margins="{left=8}" vertTextAlign="center"/>
+                    </layout>
                     <layout align="top" height="112" margins="{bottom=8}">
                         <layout align="left" width="450" margins="{right=4}"><label text="Aparência" align="top" height="18" fontSize="11" fontColor="Gray"/><textEditor align="client" field="aparencia" fontSize="12"/></layout>
                         <layout align="client" margins="{left=4}"><label text="Personalidade" align="top" height="18" fontSize="11" fontColor="Gray"/><textEditor align="client" field="personalidade" fontSize="12"/></layout>
@@ -754,21 +902,41 @@
                         <layout align="client" margins="{left=4}"><label text="Relacionamentos" align="top" height="18" fontSize="11" fontColor="Gray"/><textEditor align="client" field="relacionamentos" fontSize="12"/></layout>
                     </layout>
 
-                    <label text="RECURSOS" align="top" height="22" fontSize="13" fontColor="#b9151f" fontStyle="bold" margins="{bottom=6}"/>
+                    </layout>
+                    </layout>
+                    </layout>
+                    <layout name="secaoRecursosPessoal" align="top" height="390">
+
+                    <layout align="client">
+                    <rectangle name="cardPessoalRecursos" align="client" color="#242328" strokeColor="#4F2930" strokeSize="1"/>
+                    <layout align="client" margins="{left=8, right=8, top=8, bottom=8}">
+                    <layout align="top" height="22" margins="{bottom=6}">
+                        <rectangle align="left" width="4" color="#B9151F"/>
+                        <label text="RECURSOS" align="client" fontSize="14" fontColor="#E4C2C6" fontStyle="bold" margins="{left=8}" vertTextAlign="center"/>
+                    </layout>
                     <layout align="top" height="112" margins="{bottom=8}"><label text="Equipamentos e Pertences" align="top" height="18" fontSize="11" fontColor="Gray"/><textEditor align="client" field="equipamentosPertences" fontSize="12"/></layout>
                     <layout align="top" height="112" margins="{bottom=8}"><label text="Aliados e Contatos" align="top" height="18" fontSize="11" fontColor="Gray"/><textEditor align="client" field="aliadosContatos" fontSize="12"/></layout>
                     <layout align="top" height="112"><label text="Outras Informações" align="top" height="18" fontSize="11" fontColor="Gray"/><textEditor align="client" field="outrasInformacoes" fontSize="12"/></layout>
+                    </layout>
+                    </layout>
+                    </layout>
 
                 </layout>
-            </scrollBox>
+                </scrollBox>
+            </layout>
         </tab>
 
         <tab title="Configuração">
-            <scrollBox align="client">
+            <layout align="client">
+                <image name="texturaConfiguracao" align="client" src="assets/fate-textura-grafite.png" style="stretch" opacity="0.12"/>
+                <scrollBox align="client">
                 <layout align="client" margins="{left=12, right=12, top=12, bottom=12}">
 
-                    <label text="Estresse" align="top" height="20"
-                           fontStyle="bold" fontSize="13"/>
+                    <layout align="top" height="22" margins="{bottom=4}">
+                        <rectangle align="left" width="4" color="#B9151F"/>
+                        <label text="ESTRESSE" align="client" fontStyle="bold" fontSize="14"
+                               fontColor="#E4C2C6" margins="{left=8}" vertTextAlign="center"/>
+                    </layout>
                     <layout align="top" height="28" margins="{bottom=4, top=4}">
                         <label text="Caixas Físico (2 a 8)" align="left" width="180"
                                fontSize="11" vertTextAlign="center"/>
@@ -784,8 +952,11 @@
                               onExit="aplicarConfig()"/>
                     </layout>
 
-                    <label text="Consequências" align="top" height="20"
-                           fontStyle="bold" fontSize="13"/>
+                    <layout align="top" height="22" margins="{bottom=4}">
+                        <rectangle align="left" width="4" color="#B9151F"/>
+                        <label text="CONSEQUÊNCIAS" align="client" fontStyle="bold" fontSize="14"
+                               fontColor="#E4C2C6" margins="{left=8}" vertTextAlign="center"/>
+                    </layout>
                     <layout align="top" height="28" margins="{top=4}">
                         <label text="Consequência Suave extra" align="left" width="200"
                                fontSize="11" vertTextAlign="center"/>
@@ -794,8 +965,24 @@
                                   onChange="aplicarConfig()"/>
                     </layout>
 
+                    <layout align="top" height="32" margins="{top=14}">
+                        <label text="Modo compacto" align="left" width="200" fontSize="11" vertTextAlign="center"/>
+                        <checkBox align="left" width="28" field="cfg_compacto" text="" onChange="aplicarConfig()"/>
+                        <label text="Oculta as descrições longas na aba Pessoal." align="client" fontSize="10" fontColor="Gray" vertTextAlign="center"/>
+                    </layout>
+
+                    <layout align="top" height="42" margins="{top=12}">
+                        <label text="Tema visual" align="left" width="200" fontSize="11" vertTextAlign="center"/>
+                        <comboBox align="left" width="220" field="cfg_tema"
+                                  items="{'Grafite e vinho', 'Pergaminho clássico', 'Alto contraste'}"
+                                  values="{'grafite', 'classico', 'contraste'}"
+                                  onChange="aplicarConfig()"/>
+                        <label text="Aplicado a cartões e textura de fundo." align="client" fontSize="10" fontColor="Gray" vertTextAlign="center" margins="{left=8}"/>
+                    </layout>
+
                 </layout>
-            </scrollBox>
+                </scrollBox>
+            </layout>
         </tab>
 
     </tabControl>
