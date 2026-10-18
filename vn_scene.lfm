@@ -7,8 +7,18 @@
     <script>
     <![CDATA[
         require("firecast.lua");
+        require("dialogs.lua");
 
         local MAX_EXTRAS   = 6
+        local SLOT_IDS     = { "left", "center", "right" }
+        local SLOT_CONFIG_HEIGHT = 152   -- cabeçalho + 3 camadas
+        local CONFIG_BASE_HEIGHT = 616   -- resto da aba de configuração
+        local DEFAULT_NPC_COLOR = "#a89fd8"
+        local FOCUS_OPACITY = { 1.0, 0.45, 0.25 }
+        local DIM_OPACITY   = { 0.18, 0.12, 0.08 }
+        local MARKUP_TAGS   = { "b", "i", "u", "s", "color", "size", "font", "url", "img",
+                                "center", "quote", "code", "spoiler" }
+
         local chatReceiver = nil
         local npcMap       = {}  -- nome(lower) -> {slot, layer} ou {extra=i}
         local extraUrls    = {}  -- URL de cada extra
@@ -19,6 +29,9 @@
         }
         -- Cor do nome por NPC (nome lower -> cor hex)
         local npcColors = {}
+        local dialogExpanded = false
+        local fadeTargets = {}       -- nome do controle -> opacidade alvo
+        local previewCheckRuns = 0
 
         -- ── Utilitários ──────────────────────────────────────────────
 
@@ -37,6 +50,36 @@
             }
         end
 
+        local function normalizeNpcName(name)
+            return ((name or ""):gsub("^%s*(.-)%s*$", "%1")):lower()
+        end
+
+        local function setSrc(img, url)
+            if img and img.src ~= url then img.src = url end
+        end
+
+        local function configuredColor(value)
+            return value ~= "" and value or DEFAULT_NPC_COLOR
+        end
+
+        -- Torna um nome de tag insensível a maiúsculas: "b" -> "[bB]"
+        local function caseInsensitive(word)
+            return (word:gsub("%a", function(c) return "[" .. c:lower() .. c:upper() .. "]" end))
+        end
+
+        -- Remove BBCode e tags HTML simples das mensagens do chat
+        local function cleanMessage(text)
+            text = text or ""
+            text = text:gsub("</?%a[^>]*>", "")
+            for _, tag in ipairs(MARKUP_TAGS) do
+                local t = caseInsensitive(tag)
+                text = text:gsub("%[/" .. t .. "%]", "")
+                text = text:gsub("%[" .. t .. "%]", "")
+                text = text:gsub("%[" .. t .. "[=%s][^%]]*%]", "")
+            end
+            return text
+        end
+
         -- ── Rotação de camadas ───────────────────────────────────────
 
         local function applySlotOrder(slotId, frontLayer)
@@ -47,76 +90,144 @@
                 (frontLayer % 3) + 1,
                 ((frontLayer + 1) % 3) + 1
             }
-            imgs[1].src = urls[o[1]]
-            imgs[2].src = urls[o[2]]
-            imgs[3].src = urls[o[3]]
+            setSrc(imgs[1], urls[o[1]])
+            setSrc(imgs[2], urls[o[2]])
+            setSrc(imgs[3], urls[o[3]])
+        end
+
+        -- ── Transição suave de opacidade ─────────────────────────────
+
+        local function fadeTo(controlName, value)
+            fadeTargets[controlName] = value
+            self.tmrFade.enabled = true
+        end
+
+        local function onFadeTimer()
+            local active = false
+            for name, target in pairs(fadeTargets) do
+                local img = self[name]
+                if img then
+                    local current = img.opacity or target
+                    local diff = target - current
+                    if math.abs(diff) < 0.02 then
+                        img.opacity = target
+                        fadeTargets[name] = nil
+                    else
+                        img.opacity = current + diff * 0.35
+                        active = true
+                    end
+                else
+                    fadeTargets[name] = nil
+                end
+            end
+            if not active then self.tmrFade.enabled = false end
         end
 
         -- ── Foco global entre slots ───────────────────────────────────
 
+        -- activeSlotId = nil escurece todos os slots
         local function applySlotFocus(activeSlotId)
-            for _, sid in ipairs({"left", "center", "right"}) do
-                local imgs = slotControls(sid)
-                if sid == activeSlotId then
-                    imgs[1].opacity = 1.0
-                    imgs[2].opacity = 0.45
-                    imgs[3].opacity = 0.25
-                else
-                    imgs[1].opacity = 0.18
-                    imgs[2].opacity = 0.12
-                    imgs[3].opacity = 0.08
+            for _, sid in ipairs(SLOT_IDS) do
+                local levels = (sid == activeSlotId) and FOCUS_OPACITY or DIM_OPACITY
+                for layer = 1, 3 do
+                    fadeTo("imgSprite_" .. sid .. "_" .. layer, levels[layer])
                 end
             end
         end
 
         -- ── Botão de foco manual ─────────────────────────────────────
 
+        local function setFront(slotId, layer)
+            if not sheet then return end
+            local value = tostring(layer)
+            local field = "slot_" .. slotId .. "_front"
+            if sheet[field] ~= value then sheet[field] = value end
+        end
+
         local function setFocus(slotId, layer)
+            setFront(slotId, layer)
             applySlotOrder(slotId, layer)
             applySlotFocus(slotId)
             -- Esconde sprite de extra temporário
             self.imgExtraSprite.visible = false
         end
 
-        -- ── Limpar configuração ──────────────────────────────────────
+        -- ── Aviso de imagem que não carregou ─────────────────────────
 
-        -- ── Limpar cena ──────────────────────────────────────────────
-
-        local function clearScene()
-            self.rectDialog.visible     = false
-            self.imgDialogAvatar.visible = false
-            self.imgExtraSprite.visible  = false
-            -- Volta todos os slots para opacidade total
-            for _, sid in ipairs({"left", "center", "right"}) do
-                local imgs = slotControls(sid)
-                imgs[1].opacity = 1.0
-                imgs[2].opacity = 0.45
-                imgs[3].opacity = 0.25
+        local function updatePreviewState(img, errLabel, url)
+            if not img or not errLabel then return false end
+            if url == "" then
+                errLabel.visible = false
+                return false
             end
+            local loaded = (img.naturalWidth or 0) > 0
+            errLabel.visible = not loaded
+            return not loaded
+        end
+
+        local function checkPreviews()
+            local pending = false
+            for _, slotId in ipairs(SLOT_IDS) do
+                for layer = 1, 3 do
+                    local suffix = slotId .. "_" .. layer
+                    if updatePreviewState(self["imgPreview_" .. suffix],
+                                          self["labPreviewErr_" .. suffix],
+                                          slotUrls[slotId][layer]) then
+                        pending = true
+                    end
+                end
+            end
+            for i = 1, MAX_EXTRAS do
+                if updatePreviewState(self["imgPreviewExtra_" .. i],
+                                      self["labPreviewErrExtra_" .. i],
+                                      extraUrls[i] or "") then
+                    pending = true
+                end
+            end
+            previewCheckRuns = previewCheckRuns + 1
+            if not pending or previewCheckRuns >= 6 then
+                self.tmrPreview.enabled = false
+            end
+        end
+
+        local function schedulePreviewCheck()
+            previewCheckRuns = 0
+            self.tmrPreview.enabled = false
+            self.tmrPreview.enabled = true
         end
 
         -- ── Carrega configurações ────────────────────────────────────
 
         local function loadConfig()
             local node = sheet
-            self.imgBackground.src = (node and node.bgUrl) or ""
+            setSrc(self.imgBackground, (node and node.bgUrl) or "")
 
             npcMap    = {}
             npcColors = {}
             extraUrls = {}
+            local duplicateNames = {}
+            local hasExtras = false
 
-            for _, slotId in ipairs({"left", "center", "right"}) do
+            local function registerNpc(name, entry, color)
+                local key = normalizeNpcName(name)
+                if key == "" then return end
+                if npcMap[key] then
+                    duplicateNames[key] = true
+                    return
+                end
+                npcMap[key] = entry
+                npcColors[key] = color
+            end
+
+            for _, slotId in ipairs(SLOT_IDS) do
                 local visible = (node and node["slot_" .. slotId .. "_visible"]) == true
 
                 for layer = 1, 3 do
                     local url   = (node and node["slot_" .. slotId .. "_url"   .. layer]) or ""
                     local name  = (node and node["slot_" .. slotId .. "_npc"   .. layer]) or ""
-                    local color = (node and node["slot_" .. slotId .. "_color" .. layer]) or "#a89fd8"
+                    local color = configuredColor((node and node["slot_" .. slotId .. "_color" .. layer]) or "")
                     slotUrls[slotId][layer] = url
-                    if name ~= "" then
-                        npcMap[name:lower()]    = { slot = slotId, layer = layer }
-                        npcColors[name:lower()] = color
-                    end
+                    registerNpc(name, { slot = slotId, layer = layer }, color)
                 end
 
                 local frontStr = (node and node["slot_" .. slotId .. "_front"]) or "1"
@@ -131,32 +242,62 @@
                 -- Preview por linha
                 for layer = 1, 3 do
                     local prevImg = self["imgPreview_" .. slotId .. "_" .. layer]
-                    if prevImg then prevImg.src = slotUrls[slotId][layer] end
+                    setSrc(prevImg, slotUrls[slotId][layer])
                 end
             end
 
             for i = 1, MAX_EXTRAS do
                 local npcName = (node and node["extra_" .. i .. "_npc"])   or ""
                 local url     = (node and node["extra_" .. i .. "_url"])   or ""
-                local color   = (node and node["extra_" .. i .. "_color"]) or "#a89fd8"
+                local color   = configuredColor((node and node["extra_" .. i .. "_color"]) or "")
                 extraUrls[i]  = url
+                if url ~= "" or npcName ~= "" then hasExtras = true end
                 local ctrls   = extraControls(i)
-                ctrls.img.src      = url
+                setSrc(ctrls.img, url)
                 ctrls.rect.visible = (url ~= "" or npcName ~= "")
                 ctrls.img.visible  = (url ~= "")
 
-                if npcName ~= "" then
-                    npcMap[npcName:lower()]    = { extra = i }
-                    npcColors[npcName:lower()] = color
-                end
+                registerNpc(npcName, { extra = i }, color)
 
                 -- Preview na config
                 local prevImg = self["imgPreviewExtra_" .. i]
-                if prevImg then prevImg.src = url end
+                setSrc(prevImg, url)
             end
+
+            local duplicates = {}
+            for name in pairs(duplicateNames) do table.insert(duplicates, name) end
+            table.sort(duplicates)
+            if self.labConfigWarning then
+                self.labConfigWarning.visible = #duplicates > 0
+                self.labConfigWarning.text = #duplicates > 0
+                    and "Nomes de NPC duplicados: " .. table.concat(duplicates, ", ") .. ". O primeiro cadastro será usado."
+                    or ""
+            end
+            self.rectExtrasBar.visible = hasExtras
+            schedulePreviewCheck()
         end
 
-        -- ── Limpar configuração ──────────────────────────────────────
+        -- Campos de texto: espera o usuário parar de digitar antes de recarregar
+        local function scheduleLoadConfig()
+            self.tmrConfig.enabled = false
+            self.tmrConfig.enabled = true
+        end
+
+        local function onConfigTimer()
+            self.tmrConfig.enabled = false
+            loadConfig()
+        end
+
+        -- ── Limpar e girar configuração ──────────────────────────────
+
+        local function resetSlotFields(node, slotId)
+            node["slot_" .. slotId .. "_front"] = "1"
+            for layer = 1, 3 do
+                node["slot_" .. slotId .. "_npc"   .. layer] = ""
+                node["slot_" .. slotId .. "_url"   .. layer] = ""
+                node["slot_" .. slotId .. "_color" .. layer] = DEFAULT_NPC_COLOR
+            end
+        end
 
         local function clearConfig()
             local node = sheet
@@ -164,19 +305,46 @@
 
             node.bgUrl = ""
 
-            for _, slotId in ipairs({"left", "center", "right"}) do
+            for _, slotId in ipairs(SLOT_IDS) do
                 node["slot_" .. slotId .. "_visible"] = false
-                for layer = 1, 3 do
-                    node["slot_" .. slotId .. "_npc"   .. layer] = ""
-                    node["slot_" .. slotId .. "_url"   .. layer] = ""
-                    node["slot_" .. slotId .. "_color" .. layer] = ""
-                end
+                resetSlotFields(node, slotId)
             end
 
             for i = 1, MAX_EXTRAS do
                 node["extra_" .. i .. "_npc"]   = ""
                 node["extra_" .. i .. "_url"]   = ""
-                node["extra_" .. i .. "_color"] = ""
+                node["extra_" .. i .. "_color"] = DEFAULT_NPC_COLOR
+            end
+
+            loadConfig()
+        end
+
+        local function confirmClearConfig()
+            Dialogs.confirmYesNo("Apagar todos os nomes, cores e URLs da cena?", function(confirmed)
+                if confirmed then clearConfig() end
+            end)
+        end
+
+        local function confirmClearSlot(slotId)
+            Dialogs.confirmYesNo("Apagar nomes, cores e URLs deste slot?", function(confirmed)
+                if not confirmed or not sheet then return end
+                resetSlotFields(sheet, slotId)
+                loadConfig()
+            end)
+        end
+
+        -- O que estava na frente vai para trás; Meio sobe para Frente e Atrás para Meio
+        local function rotateSlot(slotId)
+            local node = sheet
+            if not node then return end
+
+            for _, field in ipairs({ "npc", "url", "color" }) do
+                local default = (field == "color") and DEFAULT_NPC_COLOR or ""
+                local key = "slot_" .. slotId .. "_" .. field
+                local front, middle, back = node[key .. "1"], node[key .. "2"], node[key .. "3"]
+                node[key .. "1"] = middle or default
+                node[key .. "2"] = back   or default
+                node[key .. "3"] = front  or default
             end
 
             loadConfig()
@@ -184,54 +352,77 @@
 
         -- ── Diálogo ──────────────────────────────────────────────────
 
+        local function layoutDialog(hasAvatar)
+            local top = dialogExpanded and 350 or 516
+            self.rectDialog.top = top
+            self.rectDialog.height = dialogExpanded and 250 or 84
+            self.imgDialogAvatar.top = top + 3
+            self.labDialogName.top = top + 5
+            self.labDialogContent.top = top + 29
+            self.labDialogContent.height = dialogExpanded and 216 or 52
+            self.btnDialogExpand.top = top + 4
+            self.btnDialogExpand.text = dialogExpanded and "Reduzir" or "Expandir"
+
+            if hasAvatar then
+                self.labDialogName.left = 100
+                self.labDialogName.width = 1060
+                self.labDialogContent.left = 100
+                self.labDialogContent.width = 1060
+            else
+                self.labDialogName.left = 35
+                self.labDialogName.width = 1125
+                self.labDialogContent.left = 35
+                self.labDialogContent.width = 1125
+            end
+        end
+
+        local function toggleDialogExpanded()
+            if not self.rectDialog.visible then return end
+            dialogExpanded = not dialogExpanded
+            layoutDialog(self.imgDialogAvatar.visible)
+        end
+
         local function showDialog(npcName, content, avatarUrl)
-            local color = npcColors[npcName:lower()] or "#a89fd8"
+            local color = npcColors[normalizeNpcName(npcName)] or DEFAULT_NPC_COLOR
             self.labDialogName.text      = npcName or ""
             self.labDialogName.fontColor = color
             self.labDialogContent.text   = content or ""
             self.rectDialog.visible      = true
+            self.btnDialogExpand.visible = true
 
             -- Avatar
             if avatarUrl and avatarUrl ~= "" then
-                self.imgDialogAvatar.src     = avatarUrl
+                setSrc(self.imgDialogAvatar, avatarUrl)
                 self.imgDialogAvatar.visible = true
-                -- Recua o texto para dar espaço ao avatar
-                self.labDialogName.left    = 100
-                self.labDialogName.width   = 1145
-                self.labDialogContent.left = 100
-                self.labDialogContent.width = 1145
             else
                 self.imgDialogAvatar.visible = false
-                self.labDialogName.left    = 35
-                self.labDialogName.width   = 1210
-                self.labDialogContent.left = 35
-                self.labDialogContent.width = 1210
             end
+            layoutDialog(self.imgDialogAvatar.visible)
         end
 
         -- ── Chat ─────────────────────────────────────────────────────
 
         local function onChatMessage(msg)
+            if sheet and sheet.listenChat == false then return end
+
             local logRec = msg.logRec
             if not logRec then return end
             local msgContent = logRec.msg
             if not msgContent then return end
 
-            local content     = msgContent.content or ""
+            local content     = cleanMessage(msgContent.content)
             local impersonate = msgContent.impersonation
             if not impersonate then return end
 
             if impersonate.mode == "character" then
                 local npcName = impersonate.name or ""
-                local entry   = npcMap[npcName:lower()]
+                local entry   = npcMap[normalizeNpcName(npcName)]
 
                 if entry then
                     if entry.slot then
                         -- NPC de slot normal
                         local avatarUrl = slotUrls[entry.slot][entry.layer]
-                        if sheet then
-                            sheet["slot_" .. entry.slot .. "_front"] = tostring(entry.layer)
-                        end
+                        setFront(entry.slot, entry.layer)
                         applySlotOrder(entry.slot, entry.layer)
                         applySlotFocus(entry.slot)
                         self.imgExtraSprite.visible = false
@@ -240,15 +431,10 @@
                     elseif entry.extra then
                         -- Extra entra em cena no slot centro temporariamente
                         local url = extraUrls[entry.extra] or ""
-                        self.imgExtraSprite.src     = url
+                        setSrc(self.imgExtraSprite, url)
                         self.imgExtraSprite.visible = true
                         -- Escurece os slots para dar destaque ao extra
-                        for _, sid in ipairs({"left", "center", "right"}) do
-                            local imgs = slotControls(sid)
-                            imgs[1].opacity = 0.18
-                            imgs[2].opacity = 0.12
-                            imgs[3].opacity = 0.08
-                        end
+                        applySlotFocus(nil)
                         showDialog(npcName, content, url)
                     end
                 else
@@ -262,39 +448,73 @@
                 self.imgDialogAvatar.visible = false
                 self.labDialogName.text      = "Narrador"
                 self.labDialogName.fontColor = "#cccccc"
-                self.labDialogContent.text   = msgContent.content or ""
+                self.labDialogContent.text   = content
                 self.rectDialog.visible      = true
-                self.labDialogName.left  = 35; self.labDialogName.width  = 1210
-                self.labDialogContent.left = 35; self.labDialogContent.width = 1210
+                self.btnDialogExpand.visible = true
+                layoutDialog(false)
                 applySlotFocus(nil)
             end
         end
 
         -- ── Init ─────────────────────────────────────────────────────
 
-        local function enterPresentation()
-            self.barControle.visible  = false
-            self.panelConfig.visible  = false
-            self.btnVoltar.visible    = true
-            local s = math.min(
-                self.frmStageContainer.width  / 1280,
-                self.frmStageContainer.height / 600
-            )
-            self.frmStage.scaleX = s
-            self.frmStage.scaleY = s
+        local function updateStageScale()
+            local container = self.frmStageContainer
+            if not container or container.width <= 0 or container.height <= 0 then return end
+
+            local scale = math.min(container.width / 1280, container.height / 600)
+
+            self.frmStage.scaleX = scale
+            self.frmStage.scaleY = scale
+            self.frmStage.left = math.max(0, (container.width - 1280 * scale) / 2)
+            self.frmStage.top  = math.max(0, (container.height - 600 * scale) / 2)
         end
 
-        local function exitPresentation()
-            self.barControle.visible = true
-            self.btnVoltar.visible   = false
-            self.frmStage.scaleX     = 1
-            self.frmStage.scaleY     = 1
+        local function updateConfigTab()
+            local visible = not (sheet and sheet.hideConfig == true)
+            self.tabConfig.visible = visible
+            if not visible then self.tcMain.tabIndex = 0 end
+        end
+
+        local function updateSlotLayout()
+            local container = self.slotConfigs
+            if not container then return end
+
+            local stacked = container.width < 1220
+            if stacked then
+                container.height = SLOT_CONFIG_HEIGHT * 3
+                self.configContent.height = CONFIG_BASE_HEIGHT + SLOT_CONFIG_HEIGHT * 3
+                for _, name in ipairs({"slotConfigLeft", "slotConfigCenter", "slotConfigRight"}) do
+                    self[name].align = "top"
+                    self[name].height = SLOT_CONFIG_HEIGHT
+                end
+            else
+                container.height = SLOT_CONFIG_HEIGHT
+                self.configContent.height = CONFIG_BASE_HEIGHT + SLOT_CONFIG_HEIGHT
+                self.slotConfigLeft.align = "left"
+                self.slotConfigLeft.width = 400
+                self.slotConfigLeft.height = SLOT_CONFIG_HEIGHT
+                self.slotConfigCenter.align = "left"
+                self.slotConfigCenter.width = 400
+                self.slotConfigCenter.height = SLOT_CONFIG_HEIGHT
+                self.slotConfigRight.align = "client"
+            end
         end
 
         local function init()
             loadConfig()
+            updateSlotLayout()
+            updateStageScale()
+            updateConfigTab()
             if chatReceiver == nil then
                 chatReceiver = Firecast.Messaging.newReceiver("ChatMessageEx", onChatMessage)
+            end
+        end
+
+        local function uninit()
+            if chatReceiver then
+                chatReceiver:disable()
+                chatReceiver = nil
             end
         end
     ]]>
@@ -304,137 +524,153 @@
         <![CDATA[ init() ]]>
     </event>
 
-    <!-- ── BARRA DE CONTROLE ── -->
-    <layout align="top" height="28" name="barControle">
-        <button align="left" width="110" height="28" text="⚙ Configuração"
-                fontSize="11" onClick="self.panelConfig.visible = not self.panelConfig.visible"/>
-        <button align="left" width="80" height="28" text="✕ Limpar"
-                fontSize="11" margins="{left=4}" onClick="clearScene()"/>
-        <button align="left" width="110" height="28" text="▶ Apresentação"
-                fontSize="11" margins="{left=4}"
-                onClick="enterPresentation()"/>
-    </layout>
+    <event name="onNodeUnready">
+        <![CDATA[ uninit() ]]>
+    </event>
 
-    <!-- ── PAINEL DE CONFIGURAÇÃO (direita, togglável) ── -->
-    <layout align="right" width="440" name="panelConfig" visible="true">
+    <timer name="tmrConfig"  interval="600"  enabled="false" onTimer="onConfigTimer()"/>
+    <timer name="tmrFade"    interval="40"   enabled="false" onTimer="onFadeTimer()"/>
+    <timer name="tmrPreview" interval="2000" enabled="false" onTimer="checkPreviews()"/>
+
+    <!-- ── MODELOS (reduzem a repetição do XML) ── -->
+
+    <template name="VnSpriteSlot">
+        <image name="imgSprite_$(slotId)_3" left="$(x3)" top="215" width="239" height="400" style="proportional" opacity="0.25" visible="false" src=""/>
+        <image name="imgSprite_$(slotId)_2" left="$(x2)" top="107" width="288" height="480" style="proportional" opacity="0.45" visible="false" src=""/>
+        <image name="imgSprite_$(slotId)_1" left="$(x1)" top="0"   width="337" height="564" style="proportional" opacity="1.0"  visible="false" src=""/>
+    </template>
+
+    <template name="VnExtraBarItem">
+        <rectangle name="rectExtra_$(n)" left="$(x)"  top="460" width="58" height="48" color="#1a1535" opacity="0.9" visible="false"/>
+        <image     name="imgExtra_$(n)"  left="$(xi)" top="463" width="49" height="41" style="proportional" visible="false" src=""/>
+    </template>
+
+    <template name="VnSlotRow">
+        <layout align="top" height="36" margins="{bottom=$(gap)}">
+            <label text="$(rowTitle)" align="left" width="44" fontSize="10" fontColor="Gray" vertTextAlign="center"/>
+            <edit align="left" width="100" field="slot_$(slotId)_npc$(layerNo)" hint="Nome" margins="{left=4, right=4}" onChange="scheduleLoadConfig()"/>
+            <colorComboBox align="left" width="52" field="slot_$(slotId)_color$(layerNo)" useAlpha="false" hint="Cor do nome no diálogo" margins="{right=4}" onChange="loadConfig()"/>
+            <edit align="client" field="slot_$(slotId)_url$(layerNo)" hint="URL" margins="{right=4}" onChange="scheduleLoadConfig()"/>
+            <layout align="right" width="36" height="36" margins="{right=4}">
+                <image name="imgPreview_$(slotId)_$(layerNo)" align="client" style="proportional" src=""/>
+                <label name="labPreviewErr_$(slotId)_$(layerNo)" align="client" text="!" fontSize="18" fontStyle="bold"
+                       fontColor="#ff5555" horzTextAlign="center" vertTextAlign="center" visible="false"
+                       hint="A imagem não carregou. Confira a URL."/>
+            </layout>
+            <button align="right" width="28" height="36" text="★" hint="Definir esta camada como a da frente (foco)" onClick="setFocus('$(slotId)', $(layerNo))"/>
+        </layout>
+    </template>
+
+    <template name="VnSlotConfig">
+        <layout name="slotConfig$(slotName)" align="$(boxAlign)" width="400" height="152" margins="{right=$(boxGap)}">
+            <layout align="top" height="20" margins="{bottom=4}">
+                <label text="$(slotTitle)" align="left" width="70" fontSize="11" fontStyle="bold" vertTextAlign="center"/>
+                <button align="right" width="52" height="20" text="Limpar" fontSize="10" margins="{left=4}"
+                        hint="Apaga nomes, cores e URLs deste slot" onClick="confirmClearSlot('$(slotId)')"/>
+                <button align="right" width="52" height="20" text="Girar" fontSize="10" margins="{left=4}"
+                        hint="Gira as camadas: a da frente vai para trás, e Meio e Atrás sobem" onClick="rotateSlot('$(slotId)')"/>
+                <checkBox align="client" field="slot_$(slotId)_visible" text="Visível" hint="Mostra este slot na cena" margins="{left=4}" onChange="loadConfig()"/>
+            </layout>
+            <VnSlotRow slotId="$(slotId)" layerNo="1" rowTitle="Frente" gap="4"/>
+            <VnSlotRow slotId="$(slotId)" layerNo="2" rowTitle="Meio"   gap="4"/>
+            <VnSlotRow slotId="$(slotId)" layerNo="3" rowTitle="Atrás"  gap="12"/>
+        </layout>
+    </template>
+
+    <template name="VnExtraRow">
+        <layout align="top" height="36" margins="{bottom=$(gap)}">
+            <edit align="left" width="100" field="extra_$(n)_npc" hint="Extra $(n)" margins="{right=4}" onChange="scheduleLoadConfig()"/>
+            <colorComboBox align="left" width="52" field="extra_$(n)_color" useAlpha="false" hint="Cor do nome no diálogo" margins="{right=4}" onChange="loadConfig()"/>
+            <edit align="client" field="extra_$(n)_url" hint="URL" margins="{right=4}" onChange="scheduleLoadConfig()"/>
+            <layout align="right" width="36" height="36">
+                <image name="imgPreviewExtra_$(n)" align="client" style="proportional" src=""/>
+                <label name="labPreviewErrExtra_$(n)" align="client" text="!" fontSize="18" fontStyle="bold"
+                       fontColor="#ff5555" horzTextAlign="center" vertTextAlign="center" visible="false"
+                       hint="A imagem não carregou. Confira a URL."/>
+            </layout>
+        </layout>
+    </template>
+
+    <tabControl align="client" name="tcMain" tabIndex="0">
+
+    <!-- ── ABA DA CENA ── -->
+    <tab title="Cena">
+    <layout align="client" name="sceneContent">
+    <checkBox align="bottom" height="24" field="hideConfig" text="Ocultar Configuração"
+              hint="Esconde a aba de configuração (útil para jogadores)"
+              margins="{left=8, right=8, top=4, bottom=4}" onChange="updateConfigTab()"/>
+    <!-- ── CANVAS DA CENA (sempre visível) ── -->
+    <layout align="client" name="frmStageContainer" onResize="updateStageScale()">
+        <layout left="0" top="0" width="1280" height="600" name="frmStage">
+
+            <image name="imgBackground" left="0" top="0" width="1280" height="600" style="stretch" src=""/>
+
+            <VnSpriteSlot slotId="left"   x1="23"  x2="96"  x3="160"/>
+            <VnSpriteSlot slotId="center" x1="471" x2="503" x3="567"/>
+            <VnSpriteSlot slotId="right"  x1="920" x2="896" x3="881"/>
+
+            <image name="imgExtraSprite" left="471" top="0" width="337" height="564" style="proportional" opacity="1.0" visible="false" src=""/>
+
+            <rectangle name="rectExtrasBar" left="0" top="456" width="1280" height="56" color="#0a0820" opacity="0.75"/>
+
+            <VnExtraBarItem n="1" x="443" xi="448"/>
+            <VnExtraBarItem n="2" x="510" xi="515"/>
+            <VnExtraBarItem n="3" x="577" xi="582"/>
+            <VnExtraBarItem n="4" x="644" xi="649"/>
+            <VnExtraBarItem n="5" x="711" xi="716"/>
+            <VnExtraBarItem n="6" x="778" xi="783"/>
+
+            <rectangle name="rectDialog" left="0" top="516" width="1280" height="84" color="#0a0820" opacity="0.88" visible="false"/>
+            <image name="imgDialogAvatar" left="38" top="519" width="56" height="56" style="proportional" visible="false" src=""/>
+            <label name="labDialogName"    left="35" top="521" width="1210" height="22" text="" fontColor="#a89fd8" fontSize="13" fontStyle="bold"/>
+            <label name="labDialogContent" left="35" top="545" width="1210" height="52" text="" fontColor="White" fontSize="12" wordWrap="true"/>
+            <button name="btnDialogExpand" left="1170" top="520" width="90" height="20"
+                    text="Expandir" fontSize="9" visible="false"
+                    hint="Expande ou reduz a caixa de diálogo"
+                    onClick="toggleDialogExpanded()"/>
+
+    </layout>
+    </layout>
+    </layout>
+    </tab>
+
+    <!-- ── ABA DE CONFIGURAÇÃO ── -->
+    <tab title="Configuração" name="tabConfig">
+    <layout align="client" name="panelConfig">
         <scrollBox align="client">
-            <layout left="0" top="0" width="416" height="1900"
+            <layout name="configContent" align="top" height="1220"
                     margins="{left=12, right=12, top=12, bottom=12}">
 
                 <!-- Botões de ação -->
                 <button align="top" height="28" text="🗑 Limpar tudo (nomes e URLs)"
+                        hint="Apaga toda a configuração da cena (pede confirmação)"
                         margins="{bottom=8}"
-                        onClick="clearConfig()"/>
+                        onClick="confirmClearConfig()"/>
                 <label text="Imagem de Fundo" align="top" height="20"
                        fontStyle="bold" fontSize="13"/>
                 <edit align="top" height="28" field="bgUrl"
-                      hint="URL da imagem de fundo" margins="{bottom=16}"
-                      onExit="loadConfig()"/>
+                      hint="URL da imagem de fundo" margins="{bottom=16}" onChange="scheduleLoadConfig()"/>
+                <checkBox align="top" height="24" field="listenChat" checked="true"
+                          text="Atualizar a cena com mensagens do chat"
+                          hint="Quando ligado, as falas do chat atualizam sprites e diálogo"
+                          margins="{bottom=8}"/>
+                <label name="labConfigWarning" align="top" height="18" visible="false"
+                       fontSize="10" fontColor="#d66" wordWrap="true" margins="{bottom=8}"/>
 
                 <!-- SLOTS -->
                 <label text="Slots de Personagem" align="top" height="20"
                        fontStyle="bold" fontSize="13"/>
-                <label text="Cada slot tem 3 camadas. Use ★ para foco manual."
-                       align="top" height="18" fontSize="11"
-                       fontColor="Gray" margins="{bottom=8}"/>
+                <label text="Como funciona: o Nome cadastrado precisa ser igual ao nome do personagem usado no chat (maiúsculas e minúsculas não importam; espaços nas pontas são ignorados)."
+                       align="top" height="30" fontSize="10" fontColor="Gray" wordWrap="true" margins="{bottom=2}"/>
+                <label text="Quando esse personagem fala, a cena destaca o sprite dele e mostra a fala. Mensagens do Narrador só mostram o texto."
+                       align="top" height="30" fontSize="10" fontColor="Gray" wordWrap="true" margins="{bottom=2}"/>
+                <label text="Cada slot tem 3 camadas (Frente, Meio, Atrás). Use ★ para escolher a camada em foco."
+                       align="top" height="18" fontSize="10" fontColor="Gray" wordWrap="true" margins="{bottom=8}"/>
 
-                <layout align="top" height="18" margins="{bottom=4}">
-                    <label text="Camada" align="left" width="44" fontSize="10" fontColor="Gray"/>
-                    <label text="Nome" align="left" width="100" fontSize="10" fontColor="Gray" margins="{left=4}"/>
-                    <label text="Cor" align="left" width="52" fontSize="10" fontColor="Gray" margins="{left=4}"/>
-                    <label text="URL" align="client" fontSize="10" fontColor="Gray" margins="{left=4}"/>
-                    <label text="Prev" align="right" width="36" fontSize="10" fontColor="Gray" horzTextAlign="center" margins="{right=4}"/>
-                    <label text="★" align="right" width="28" fontSize="10" fontColor="Gray" horzTextAlign="center"/>
-                </layout>
-
-                <!-- Slot Esquerda -->
-                <layout align="top" height="20" margins="{bottom=4}">
-                    <label text="Esquerda" align="left" width="100" fontSize="11" fontStyle="bold" vertTextAlign="center"/>
-                    <checkBox align="client" field="slot_left_visible" text="Visível" margins="{left=4}" onChange="loadConfig()"/>
-                </layout>
-                <layout align="top" height="36" margins="{bottom=4}">
-                    <label text="Frente" align="left" width="44" fontSize="10" fontColor="Gray" vertTextAlign="center"/>
-                    <edit align="left" width="100" field="slot_left_npc1" hint="Nome" margins="{left=4, right=4}" onExit="loadConfig()"/>
-                    <edit align="left" width="52" field="slot_left_color1" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
-                    <edit align="client" field="slot_left_url1" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
-                    <image name="imgPreview_left_1" align="right" width="36" height="36" style="proportional" src="" margins="{right=4}"/>
-                    <button align="right" width="28" height="36" text="★" onClick="setFocus('left', 1)"/>
-                </layout>
-                <layout align="top" height="36" margins="{bottom=4}">
-                    <label text="Meio" align="left" width="44" fontSize="10" fontColor="Gray" vertTextAlign="center"/>
-                    <edit align="left" width="100" field="slot_left_npc2" hint="Nome" margins="{left=4, right=4}" onExit="loadConfig()"/>
-                    <edit align="left" width="52" field="slot_left_color2" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
-                    <edit align="client" field="slot_left_url2" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
-                    <image name="imgPreview_left_2" align="right" width="36" height="36" style="proportional" src="" margins="{right=4}"/>
-                    <button align="right" width="28" height="36" text="★" onClick="setFocus('left', 2)"/>
-                </layout>
-                <layout align="top" height="36" margins="{bottom=12}">
-                    <label text="Atrás" align="left" width="44" fontSize="10" fontColor="Gray" vertTextAlign="center"/>
-                    <edit align="left" width="100" field="slot_left_npc3" hint="Nome" margins="{left=4, right=4}" onExit="loadConfig()"/>
-                    <edit align="left" width="52" field="slot_left_color3" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
-                    <edit align="client" field="slot_left_url3" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
-                    <image name="imgPreview_left_3" align="right" width="36" height="36" style="proportional" src="" margins="{right=4}"/>
-                    <button align="right" width="28" height="36" text="★" onClick="setFocus('left', 3)"/>
-                </layout>
-
-                <!-- Slot Centro -->
-                <layout align="top" height="20" margins="{bottom=4}">
-                    <label text="Centro" align="left" width="100" fontSize="11" fontStyle="bold" vertTextAlign="center"/>
-                    <checkBox align="client" field="slot_center_visible" text="Visível" margins="{left=4}" onChange="loadConfig()"/>
-                </layout>
-                <layout align="top" height="36" margins="{bottom=4}">
-                    <label text="Frente" align="left" width="44" fontSize="10" fontColor="Gray" vertTextAlign="center"/>
-                    <edit align="left" width="100" field="slot_center_npc1" hint="Nome" margins="{left=4, right=4}" onExit="loadConfig()"/>
-                    <edit align="left" width="52" field="slot_center_color1" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
-                    <edit align="client" field="slot_center_url1" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
-                    <image name="imgPreview_center_1" align="right" width="36" height="36" style="proportional" src="" margins="{right=4}"/>
-                    <button align="right" width="28" height="36" text="★" onClick="setFocus('center', 1)"/>
-                </layout>
-                <layout align="top" height="36" margins="{bottom=4}">
-                    <label text="Meio" align="left" width="44" fontSize="10" fontColor="Gray" vertTextAlign="center"/>
-                    <edit align="left" width="100" field="slot_center_npc2" hint="Nome" margins="{left=4, right=4}" onExit="loadConfig()"/>
-                    <edit align="left" width="52" field="slot_center_color2" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
-                    <edit align="client" field="slot_center_url2" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
-                    <image name="imgPreview_center_2" align="right" width="36" height="36" style="proportional" src="" margins="{right=4}"/>
-                    <button align="right" width="28" height="36" text="★" onClick="setFocus('center', 2)"/>
-                </layout>
-                <layout align="top" height="36" margins="{bottom=12}">
-                    <label text="Atrás" align="left" width="44" fontSize="10" fontColor="Gray" vertTextAlign="center"/>
-                    <edit align="left" width="100" field="slot_center_npc3" hint="Nome" margins="{left=4, right=4}" onExit="loadConfig()"/>
-                    <edit align="left" width="52" field="slot_center_color3" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
-                    <edit align="client" field="slot_center_url3" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
-                    <image name="imgPreview_center_3" align="right" width="36" height="36" style="proportional" src="" margins="{right=4}"/>
-                    <button align="right" width="28" height="36" text="★" onClick="setFocus('center', 3)"/>
-                </layout>
-
-                <!-- Slot Direita -->
-                <layout align="top" height="20" margins="{bottom=4}">
-                    <label text="Direita" align="left" width="100" fontSize="11" fontStyle="bold" vertTextAlign="center"/>
-                    <checkBox align="client" field="slot_right_visible" text="Visível" margins="{left=4}" onChange="loadConfig()"/>
-                </layout>
-                <layout align="top" height="36" margins="{bottom=4}">
-                    <label text="Frente" align="left" width="44" fontSize="10" fontColor="Gray" vertTextAlign="center"/>
-                    <edit align="left" width="100" field="slot_right_npc1" hint="Nome" margins="{left=4, right=4}" onExit="loadConfig()"/>
-                    <edit align="left" width="52" field="slot_right_color1" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
-                    <edit align="client" field="slot_right_url1" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
-                    <image name="imgPreview_right_1" align="right" width="36" height="36" style="proportional" src="" margins="{right=4}"/>
-                    <button align="right" width="28" height="36" text="★" onClick="setFocus('right', 1)"/>
-                </layout>
-                <layout align="top" height="36" margins="{bottom=4}">
-                    <label text="Meio" align="left" width="44" fontSize="10" fontColor="Gray" vertTextAlign="center"/>
-                    <edit align="left" width="100" field="slot_right_npc2" hint="Nome" margins="{left=4, right=4}" onExit="loadConfig()"/>
-                    <edit align="left" width="52" field="slot_right_color2" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
-                    <edit align="client" field="slot_right_url2" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
-                    <image name="imgPreview_right_2" align="right" width="36" height="36" style="proportional" src="" margins="{right=4}"/>
-                    <button align="right" width="28" height="36" text="★" onClick="setFocus('right', 2)"/>
-                </layout>
-                <layout align="top" height="36" margins="{bottom=12}">
-                    <label text="Atrás" align="left" width="44" fontSize="10" fontColor="Gray" vertTextAlign="center"/>
-                    <edit align="left" width="100" field="slot_right_npc3" hint="Nome" margins="{left=4, right=4}" onExit="loadConfig()"/>
-                    <edit align="left" width="52" field="slot_right_color3" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
-                    <edit align="client" field="slot_right_url3" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
-                    <image name="imgPreview_right_3" align="right" width="36" height="36" style="proportional" src="" margins="{right=4}"/>
-                    <button align="right" width="28" height="36" text="★" onClick="setFocus('right', 3)"/>
+                <layout name="slotConfigs" align="top" height="152" onResize="updateSlotLayout()">
+                    <VnSlotConfig slotName="Left"   slotId="left"   slotTitle="Esquerda" boxAlign="left"   boxGap="8"/>
+                    <VnSlotConfig slotName="Center" slotId="center" slotTitle="Centro"   boxAlign="left"   boxGap="8"/>
+                    <VnSlotConfig slotName="Right"  slotId="right"  slotTitle="Direita"  boxAlign="client" boxGap="0"/>
                 </layout>
 
                 <!-- Extras -->
@@ -447,93 +683,18 @@
                     <label text="URL" align="client" fontSize="10" fontColor="Gray" margins="{left=4}"/>
                     <label text="Prev" align="right" width="36" fontSize="10" fontColor="Gray" horzTextAlign="center"/>
                 </layout>
-                <layout align="top" height="36" margins="{bottom=6}">
-                    <edit align="left" width="100" field="extra_1_npc" hint="Extra 1" margins="{right=4}" onExit="loadConfig()"/>
-                    <edit align="left" width="52" field="extra_1_color" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
-                    <edit align="client" field="extra_1_url" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
-                    <image name="imgPreviewExtra_1" align="right" width="36" height="36" style="proportional" src=""/>
-                </layout>
-                <layout align="top" height="36" margins="{bottom=6}">
-                    <edit align="left" width="100" field="extra_2_npc" hint="Extra 2" margins="{right=4}" onExit="loadConfig()"/>
-                    <edit align="left" width="52" field="extra_2_color" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
-                    <edit align="client" field="extra_2_url" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
-                    <image name="imgPreviewExtra_2" align="right" width="36" height="36" style="proportional" src=""/>
-                </layout>
-                <layout align="top" height="36" margins="{bottom=6}">
-                    <edit align="left" width="100" field="extra_3_npc" hint="Extra 3" margins="{right=4}" onExit="loadConfig()"/>
-                    <edit align="left" width="52" field="extra_3_color" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
-                    <edit align="client" field="extra_3_url" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
-                    <image name="imgPreviewExtra_3" align="right" width="36" height="36" style="proportional" src=""/>
-                </layout>
-                <layout align="top" height="36" margins="{bottom=6}">
-                    <edit align="left" width="100" field="extra_4_npc" hint="Extra 4" margins="{right=4}" onExit="loadConfig()"/>
-                    <edit align="left" width="52" field="extra_4_color" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
-                    <edit align="client" field="extra_4_url" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
-                    <image name="imgPreviewExtra_4" align="right" width="36" height="36" style="proportional" src=""/>
-                </layout>
-                <layout align="top" height="36" margins="{bottom=6}">
-                    <edit align="left" width="100" field="extra_5_npc" hint="Extra 5" margins="{right=4}" onExit="loadConfig()"/>
-                    <edit align="left" width="52" field="extra_5_color" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
-                    <edit align="client" field="extra_5_url" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
-                    <image name="imgPreviewExtra_5" align="right" width="36" height="36" style="proportional" src=""/>
-                </layout>
-                <layout align="top" height="36" margins="{bottom=16}">
-                    <edit align="left" width="100" field="extra_6_npc" hint="Extra 6" margins="{right=4}" onExit="loadConfig()"/>
-                    <edit align="left" width="52" field="extra_6_color" hint="#a89fd8" margins="{right=4}" onExit="loadConfig()"/>
-                    <edit align="client" field="extra_6_url" hint="URL" margins="{right=4}" onExit="loadConfig()"/>
-                    <image name="imgPreviewExtra_6" align="right" width="36" height="36" style="proportional" src=""/>
-                </layout>
+                <VnExtraRow n="1" gap="6"/>
+                <VnExtraRow n="2" gap="6"/>
+                <VnExtraRow n="3" gap="6"/>
+                <VnExtraRow n="4" gap="6"/>
+                <VnExtraRow n="5" gap="6"/>
+                <VnExtraRow n="6" gap="16"/>
 
             </layout>
         </scrollBox>
     </layout>
 
-    <!-- ── CANVAS DA CENA (sempre visível) ── -->
-    <layout align="client" name="frmStageContainer">
-        <layout left="0" top="0" width="1280" height="600" name="frmStage">
-
-            <image name="imgBackground" left="0" top="0" width="1280" height="600" style="stretch" src=""/>
-
-            <image name="imgSprite_left_3"   left="160" top="215" width="239" height="400" style="proportional" opacity="0.25" visible="false" src=""/>
-            <image name="imgSprite_left_2"   left="96"  top="107" width="288" height="480" style="proportional" opacity="0.45" visible="false" src=""/>
-            <image name="imgSprite_left_1"   left="23"  top="0"   width="337" height="564" style="proportional" opacity="1.0"  visible="false" src=""/>
-
-            <image name="imgSprite_center_3" left="625" top="215" width="239" height="400" style="proportional" opacity="0.25" visible="false" src=""/>
-            <image name="imgSprite_center_2" left="561" top="107" width="288" height="480" style="proportional" opacity="0.45" visible="false" src=""/>
-            <image name="imgSprite_center_1" left="529" top="0"   width="337" height="564" style="proportional" opacity="1.0"  visible="false" src=""/>
-
-            <image name="imgSprite_right_3"  left="1100" top="215" width="239" height="400" style="proportional" opacity="0.25" visible="false" src=""/>
-            <image name="imgSprite_right_2"  left="1036" top="107" width="288" height="480" style="proportional" opacity="0.45" visible="false" src=""/>
-            <image name="imgSprite_right_1"  left="1033" top="0"   width="337" height="564" style="proportional" opacity="1.0"  visible="false" src=""/>
-
-            <image name="imgExtraSprite" left="471" top="0" width="337" height="564" style="proportional" opacity="1.0" visible="false" src=""/>
-
-            <rectangle name="rectExtrasBar" left="0" top="467" width="1280" height="56" color="#0a0820" opacity="0.75"/>
-
-            <rectangle name="rectExtra_1" left="426" top="471" width="58" height="48" color="#1a1535" opacity="0.9" visible="false"/>
-            <image     name="imgExtra_1"  left="431" top="474" width="49" height="41" style="proportional" visible="false" src=""/>
-            <rectangle name="rectExtra_2" left="493" top="471" width="58" height="48" color="#1a1535" opacity="0.9" visible="false"/>
-            <image     name="imgExtra_2"  left="497" top="474" width="49" height="41" style="proportional" visible="false" src=""/>
-            <rectangle name="rectExtra_3" left="560" top="471" width="58" height="48" color="#1a1535" opacity="0.9" visible="false"/>
-            <image     name="imgExtra_3"  left="564" top="474" width="49" height="41" style="proportional" visible="false" src=""/>
-            <rectangle name="rectExtra_4" left="627" top="471" width="58" height="48" color="#1a1535" opacity="0.9" visible="false"/>
-            <image     name="imgExtra_4"  left="631" top="474" width="49" height="41" style="proportional" visible="false" src=""/>
-            <rectangle name="rectExtra_5" left="694" top="471" width="58" height="48" color="#1a1535" opacity="0.9" visible="false"/>
-            <image     name="imgExtra_5"  left="698" top="474" width="49" height="41" style="proportional" visible="false" src=""/>
-            <rectangle name="rectExtra_6" left="761" top="471" width="58" height="48" color="#1a1535" opacity="0.9" visible="false"/>
-            <image     name="imgExtra_6"  left="765" top="474" width="49" height="41" style="proportional" visible="false" src=""/>
-
-            <rectangle name="rectDialog" left="0" top="516" width="1280" height="84" color="#0a0820" opacity="0.88" visible="false"/>
-            <image name="imgDialogAvatar" left="38" top="519" width="56" height="56" style="proportional" visible="false" src=""/>
-            <label name="labDialogName"    left="35" top="521" width="1210" height="22" text="" fontColor="#a89fd8" fontSize="13" fontStyle="bold"/>
-            <label name="labDialogContent" left="35" top="545" width="1210" height="52" text="" fontColor="White" fontSize="12" wordWrap="true"/>
-
-            <!-- Botão voltar do modo apresentação -->
-            <button name="btnVoltar" left="4" top="4" width="80" height="22"
-                    text="◀ Voltar" fontSize="9" visible="false"
-                    onClick="exitPresentation()"/>
-
-    </layout>
-    </layout>
+    </tab>
+    </tabControl>
 
 </form>
