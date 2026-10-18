@@ -7,31 +7,12 @@
     <script>
     <![CDATA[
         require("firecast.lua");
+        local Async = require("async.lua");
 
-        -- ── Constantes de configuração padrão ────────────────────────
-        local DEFAULT_ESCADA_MAX  = 5   -- topo da escada (+5)
-        local DEFAULT_ESCADA_MIN  = 1   -- base (+1)
-        local DEFAULT_ASPECTOS    = 3   -- aspectos livres
-        local DEFAULT_FACANHAS    = 6   -- linhas de façanhas
-        local DEFAULT_EXTRAS_L    = 6   -- linhas de extras (lista)
+        -- Configuração padrão
         local DEFAULT_FISICO      = 4   -- caixas de estresse físico (total)
         local DEFAULT_MENTAL      = 4   -- caixas de estresse mental (total)
-        local DEFAULT_CSE         = true -- consequência suave extra
-
-        -- Nomes dos níveis da escada (índice = bônus)
-        local NIVEL = {
-            [0] = "Medíocre",
-            [1] = "Regular",
-            [2] = "Razoável",
-            [3] = "Bom",
-            [4] = "Ótimo",
-            [5] = "Excepcional",
-            [6] = "Fantástico",
-            [7] = "Épico",
-            [8] = "Lendário",
-        }
-
-        -- ── Rolagem de dado Fate ─────────────────────────────────────
+        -- Rolagem de dado Fate
 
         local function rolarFate(nomePericia, bonus)
             local room = Firecast.getRoomOf(sheet)
@@ -46,27 +27,12 @@
             end
 
             local msg = nomePericia ~= "" and nomePericia or "Perícia"
-            async(function()
+            Async.execute(function()
                 await(room.chat:asyncRoll(expr, msg))
             end)
         end
 
-        -- ── Atualiza a escada de perícias dinamicamente ───────────────
-
-        local function atualizarEscada()
-            local node    = sheet
-            local maxNiv  = tonumber(node and node.cfg_escadaMax) or DEFAULT_ESCADA_MAX
-            local minNiv  = tonumber(node and node.cfg_escadaMin) or DEFAULT_ESCADA_MIN
-
-            -- Mostra/oculta linhas da escada conforme configuração
-            for nivel = 0, 8 do
-                local visivel = (nivel >= minNiv and nivel <= maxNiv)
-                local row = self["rowNivel_" .. nivel]
-                if row then row.visible = visivel end
-            end
-        end
-
-        -- ── Atualiza caixas de estresse ───────────────────────────────
+        -- Atualiza caixas de estresse
 
         local function atualizarEstresse()
             local node    = sheet
@@ -74,68 +40,179 @@
             local mental  = tonumber(node and node.cfg_mental)  or DEFAULT_MENTAL
 
             for i = 1, 8 do
-                local chkF = self["chkFisico_" .. i]
-                local chkM = self["chkMental_" .. i]
-                if chkF then
-                    chkF.visible = (i <= fisico)
+                for _, prefixo in ipairs({"chkFisico_", "chkFisicoTopo_"}) do
+                    local chkF = self[prefixo .. i]
+                    if chkF then chkF.visible = (i <= fisico) end
                 end
-                if chkM then
-                    chkM.visible = (i <= mental)
+                for _, prefixo in ipairs({"chkMental_", "chkMentalTopo_"}) do
+                    local chkM = self[prefixo .. i]
+                    if chkM then chkM.visible = (i <= mental) end
                 end
             end
         end
 
-        -- ── Atualiza consequência suave extra ─────────────────────────
+        -- Atualiza consequência suave extra
 
         local function atualizarConsequencias()
             local node = sheet
             local cse  = (node and node.cfg_cse) == true
             local rowCSE = self["rowConsCSExtra"]
             if rowCSE then rowCSE.visible = cse end
+            local rowCSETopo = self["rowConsCSExtraTopo"]
+            if rowCSETopo then rowCSETopo.visible = cse end
         end
 
-        -- ── Atualiza linhas de façanhas ───────────────────────────────
+        local niveisPericia = {
+            [0] = "Medíocre", [1] = "Regular", [2] = "Razoável",
+            [3] = "Bom", [4] = "Ótimo", [5] = "Excepcional",
+            [6] = "Fantástico", [7] = "Épico", [8] = "Lendário"
+        }
+
+        local function atualizarNivelPericia(i)
+            local valor = tonumber(sheet and sheet["pericia" .. i .. "_valor"])
+            local nivel = self["nivelPericia_" .. i]
+            if nivel then
+                nivel.text = valor and niveisPericia[valor] or ""
+            end
+        end
+
+        local function atualizarPericias()
+            if not sheet then return end
+            local existePericia = false
+            local ultimaPericia = 0
+            for i = 1, 16 do
+                existePericia = existePericia or sheet["pericia" .. i .. "_ativa"] == true
+                if sheet["pericia" .. i .. "_ativa"] == true then ultimaPericia = i end
+            end
+            if not existePericia then
+                for i = 1, 4 do sheet["pericia" .. i .. "_ativa"] = true end
+            end
+            for i = 1, 16 do
+                local row = self["rowPericia_" .. i]
+                if row then row.visible = sheet["pericia" .. i .. "_ativa"] == true end
+                atualizarNivelPericia(i)
+            end
+            local corpo = self["corpoPrincipal"]
+            if corpo then corpo.height = 520 end
+            local lista = self["listaPericiasFacanhas"]
+            if lista then lista.height = math.max(600, 70 + ultimaPericia * 57) end
+        end
 
         local function atualizarFacanhas()
-            local node = sheet
-            local n    = tonumber(node and node.cfg_facanhas) or DEFAULT_FACANHAS
+            if not sheet then return end
+            local existeFacanha = false
+            for i = 1, 10 do existeFacanha = existeFacanha or sheet["facanha" .. i .. "_ativa"] == true end
+            if not existeFacanha then
+                for i = 1, 3 do sheet["facanha" .. i .. "_ativa"] = true end
+            end
             for i = 1, 10 do
                 local row = self["rowFacanha_" .. i]
-                if row then row.visible = (i <= n) end
+                if row then row.visible = sheet["facanha" .. i .. "_ativa"] == true end
             end
         end
 
-        -- ── Atualiza linhas de extras (lista) ────────────────────────
-
-        local function atualizarExtrasLista()
-            local node = sheet
-            local n    = tonumber(node and node.cfg_extrasL) or DEFAULT_EXTRAS_L
+        local function adicionarFacanha()
+            if not sheet then return end
             for i = 1, 10 do
-                local row = self["rowExtraL_" .. i]
-                if row then row.visible = (i <= n) end
+                if sheet["facanha" .. i .. "_ativa"] ~= true then
+                    sheet["facanha" .. i .. "_ativa"] = true
+                    atualizarFacanhas()
+                    return
+                end
             end
         end
 
-        -- ── Atualiza aspectos livres ──────────────────────────────────
+        local function removerFacanha(i)
+            if not sheet then return end
+            sheet["facanha" .. i .. "_ativa"] = false
+            atualizarFacanhas()
+        end
 
-        local function atualizarAspectos()
-            local node = sheet
-            local n    = tonumber(node and node.cfg_aspectos) or DEFAULT_ASPECTOS
-            for i = 1, 7 do
-                local row = self["rowAspecto_" .. i]
-                if row then row.visible = (i <= n) end
+        local function adicionarPericia()
+            if not sheet then return end
+            for i = 1, 16 do
+                if sheet["pericia" .. i .. "_ativa"] ~= true then
+                    sheet["pericia" .. i .. "_ativa"] = true
+                    atualizarPericias()
+                    return
+                end
             end
         end
 
-        -- ── Aplica todas as configurações ─────────────────────────────
+        local function removerPericia(i)
+            if not sheet then return end
+            sheet["pericia" .. i .. "_ativa"] = false
+            atualizarPericias()
+        end
+
+        local function atualizarExtras()
+            if not sheet then return end
+            for i = 1, 6 do
+                local row = self["rowExtraD_" .. i]
+                if row then
+                    row.visible = sheet["extraD" .. i .. "_ativo"] == true
+                    if i <= 3 then
+                        row.height = sheet["extraD" .. i .. "_expandido"] == true and 380 or 240
+                    end
+                end
+            end
+        end
+
+        local function adicionarExtra()
+            if not sheet then return end
+            for i = 1, 6 do
+                if sheet["extraD" .. i .. "_ativo"] ~= true then
+                    sheet["extraD" .. i .. "_ativo"] = true
+                    atualizarExtras()
+                    return
+                end
+            end
+        end
+
+        local function removerExtra(i)
+            if not sheet then return end
+            sheet["extraD" .. i .. "_ativo"] = false
+            sheet["extraD" .. i .. "_nome"] = nil
+            sheet["extraD" .. i .. "_perm"] = nil
+            sheet["extraD" .. i .. "_custo"] = nil
+            sheet["extraD" .. i .. "_desc"] = nil
+            atualizarExtras()
+        end
+
+        local function alternarDescricaoExtra(i)
+            if not sheet then return end
+            local expandido = sheet["extraD" .. i .. "_expandido"] == true
+            sheet["extraD" .. i .. "_expandido"] = not expandido
+            local row = self["rowExtraD_" .. i]
+            if row then row.height = expandido and 240 or 380 end
+        end
+
+        local function atualizarDicaRetrato()
+            local dica = self["dicaRetrato"]
+            local imagem = self["imgRetrato"]
+            if dica then
+                local url = imagem and imagem.imageURL
+                dica.visible = url == nil or url == ""
+            end
+        end
+
+        local function removerRetrato()
+            if not sheet then return end
+            sheet.retrato = nil
+            local imagem = self["imgRetrato"]
+            if imagem then imagem.imageURL = "" end
+            atualizarDicaRetrato()
+        end
+
+        -- Aplica todas as configurações
 
         local function aplicarConfig()
-            atualizarEscada()
             atualizarEstresse()
             atualizarConsequencias()
+            atualizarPericias()
             atualizarFacanhas()
-            atualizarExtrasLista()
-            atualizarAspectos()
+            atualizarExtras()
+            atualizarDicaRetrato()
         end
     ]]>
     </script>
@@ -151,196 +228,189 @@
         <!-- ══════════════════════════════════════════════════════════ -->
         <tab title="Ficha">
             <scrollBox align="client">
-                <layout align="client" margins="{left=10, right=10, top=10, bottom=10}">
+                <layout align="top" height="2200" margins="{left=10, right=10, top=10, bottom=10}">
 
                     <!-- ── Cabeçalho ── -->
-                    <layout align="top" height="52" margins="{bottom=8}">
+                    <layout align="top" height="58" margins="{bottom=10}">
                         <layout align="client" margins="{right=8}">
-                            <label text="Nome" align="top" height="14"
-                                   fontSize="8" fontColor="Gray" fontStyle="bold"/>
-                            <edit align="client" field="nome" fontSize="13"/>
+                            <label text="Nome" align="top" height="18"
+                                   fontSize="11" fontColor="Gray" fontStyle="bold"/>
+                            <edit align="client" field="nome" fontSize="15"/>
                         </layout>
-                        <layout align="right" width="160">
-                            <layout align="client" margins="{right=8}">
-                                <label text="Jogador" align="top" height="14"
-                                       fontSize="8" fontColor="Gray" fontStyle="bold"/>
-                                <edit align="client" field="jogador" fontSize="11"/>
+                        <layout align="right" width="120">
+                            <layout align="left" width="56" margins="{right=8}">
+                                <label text="Recarga" align="top" height="18"
+                                       fontSize="10" fontColor="Gray" fontStyle="bold"/>
+                                <edit align="client" field="recarga"
+                                      horzTextAlign="center" fontSize="15"/>
                             </layout>
-                            <layout align="right" width="72">
-                                <layout align="left" width="34" margins="{right=4}">
-                                    <label text="Recarga" align="top" height="14"
-                                           fontSize="7" fontColor="Gray" fontStyle="bold"/>
-                                    <edit align="client" field="recarga"
-                                          horzTextAlign="center" fontSize="13"/>
-                                </layout>
-                                <layout align="client">
-                                    <label text="P. Destino" align="top" height="14"
-                                           fontSize="7" fontColor="Gray" fontStyle="bold"/>
-                                    <edit align="client" field="pontosDestino"
-                                          horzTextAlign="center" fontSize="13"/>
-                                </layout>
+                            <layout align="client">
+                                <label text="P. Destino" align="top" height="18"
+                                       fontSize="10" fontColor="Gray" fontStyle="bold"/>
+                                <edit align="client" field="pontosDestino"
+                                      horzTextAlign="center" fontSize="15"/>
                             </layout>
                         </layout>
                     </layout>
 
                     <!-- ── Corpo principal: Perícias | Retrato+Aspectos ── -->
-                    <layout align="top" height="340" margins="{bottom=8}">
+                    <layout name="corpoPrincipal" align="top" height="520" margins="{bottom=10}">
 
                         <!-- Escada de Perícias -->
-                        <layout align="left" width="260" margins="{right=8}">
+                        <layout align="left" width="260" visible="false" margins="{right=8}">
                             <label text="Perícias" align="top" height="18"
-                                   fontSize="9" fontColor="Gray" fontStyle="bold"
+                                   fontSize="11" fontColor="Gray" fontStyle="bold"
                                    margins="{bottom=4}"/>
                             <layout align="client">
 
                                 <!-- Nível +8 -->
                                 <layout align="top" height="52" name="rowNivel_8" visible="false" margins="{bottom=2}">
-                                    <label text="+8" align="left" width="24" fontSize="9" fontColor="#b9151f" fontStyle="bold" vertTextAlign="center" horzTextAlign="trailing" margins="{right=4}"/>
-                                    <label text="Lendário" align="left" width="52" fontSize="7" fontColor="Gray" vertTextAlign="center" margins="{right=4}"/>
+                                    <label text="+8" align="left" width="24" fontSize="11" fontColor="#b9151f" fontStyle="bold" vertTextAlign="center" horzTextAlign="trailing" margins="{right=4}"/>
+                                    <label text="Lendário" align="left" width="52" fontSize="10" fontColor="Gray" vertTextAlign="center" margins="{right=4}"/>
                                     <layout align="client">
                                         <layout align="top" height="24" margins="{bottom=2}">
                                             <edit align="client" field="per8_1" hint="perícia" fontSize="10" margins="{right=2}"/>
                                             <edit align="right" width="24" field="per8_1v" hint="0" horzTextAlign="center" fontSize="10" margins="{right=2}"/>
-                                            <button align="right" width="24" height="24" text="dF" fontSize="8" onClick="rolarFate(self.per8_1.text, self.per8_1v.text)"/>
+                                            <button align="right" width="24" height="24" text="dF" fontSize="10" onClick="rolarFate(self.per8_1.text, self.per8_1v.text)"/>
                                         </layout>
                                     </layout>
                                 </layout>
 
                                 <!-- Nível +7 -->
                                 <layout align="top" height="52" name="rowNivel_7" visible="false" margins="{bottom=2}">
-                                    <label text="+7" align="left" width="24" fontSize="9" fontColor="#b9151f" fontStyle="bold" vertTextAlign="center" horzTextAlign="trailing" margins="{right=4}"/>
-                                    <label text="Épico" align="left" width="52" fontSize="7" fontColor="Gray" vertTextAlign="center" margins="{right=4}"/>
+                                    <label text="+7" align="left" width="24" fontSize="11" fontColor="#b9151f" fontStyle="bold" vertTextAlign="center" horzTextAlign="trailing" margins="{right=4}"/>
+                                    <label text="Épico" align="left" width="52" fontSize="10" fontColor="Gray" vertTextAlign="center" margins="{right=4}"/>
                                     <layout align="client">
                                         <layout align="top" height="24" margins="{bottom=2}">
                                             <edit align="client" field="per7_1" hint="perícia" fontSize="10" margins="{right=2}"/>
                                             <edit align="right" width="24" field="per7_1v" hint="0" horzTextAlign="center" fontSize="10" margins="{right=2}"/>
-                                            <button align="right" width="24" height="24" text="dF" fontSize="8" onClick="rolarFate(self.per7_1.text, self.per7_1v.text)"/>
+                                            <button align="right" width="24" height="24" text="dF" fontSize="10" onClick="rolarFate(self.per7_1.text, self.per7_1v.text)"/>
                                         </layout>
                                     </layout>
                                 </layout>
 
                                 <!-- Nível +6 -->
                                 <layout align="top" height="52" name="rowNivel_6" visible="false" margins="{bottom=2}">
-                                    <label text="+6" align="left" width="24" fontSize="9" fontColor="#b9151f" fontStyle="bold" vertTextAlign="center" horzTextAlign="trailing" margins="{right=4}"/>
-                                    <label text="Fantástico" align="left" width="52" fontSize="7" fontColor="Gray" vertTextAlign="center" margins="{right=4}"/>
+                                    <label text="+6" align="left" width="24" fontSize="11" fontColor="#b9151f" fontStyle="bold" vertTextAlign="center" horzTextAlign="trailing" margins="{right=4}"/>
+                                    <label text="Fantástico" align="left" width="52" fontSize="10" fontColor="Gray" vertTextAlign="center" margins="{right=4}"/>
                                     <layout align="client">
                                         <layout align="top" height="24" margins="{bottom=2}">
                                             <edit align="client" field="per6_1" hint="perícia" fontSize="10" margins="{right=2}"/>
                                             <edit align="right" width="24" field="per6_1v" hint="0" horzTextAlign="center" fontSize="10" margins="{right=2}"/>
-                                            <button align="right" width="24" height="24" text="dF" fontSize="8" onClick="rolarFate(self.per6_1.text, self.per6_1v.text)"/>
+                                            <button align="right" width="24" height="24" text="dF" fontSize="10" onClick="rolarFate(self.per6_1.text, self.per6_1v.text)"/>
                                         </layout>
                                     </layout>
                                 </layout>
 
                                 <!-- Nível +5 — 1 slot -->
                                 <layout align="top" height="28" name="rowNivel_5" margins="{bottom=2}">
-                                    <label text="+5" align="left" width="24" fontSize="9" fontColor="#b9151f" fontStyle="bold" vertTextAlign="center" horzTextAlign="trailing" margins="{right=4}"/>
-                                    <label text="Excepcional" align="left" width="52" fontSize="7" fontColor="Gray" vertTextAlign="center" margins="{right=4}"/>
+                                    <label text="+5" align="left" width="24" fontSize="11" fontColor="#b9151f" fontStyle="bold" vertTextAlign="center" horzTextAlign="trailing" margins="{right=4}"/>
+                                    <label text="Excepcional" align="left" width="52" fontSize="10" fontColor="Gray" vertTextAlign="center" margins="{right=4}"/>
                                     <layout align="client">
                                         <edit align="client" field="per5_1" hint="perícia" fontSize="10" margins="{right=2}"/>
                                         <edit align="right" width="24" field="per5_1v" hint="0" horzTextAlign="center" fontSize="10" margins="{right=2}"/>
-                                        <button align="right" width="24" height="24" text="dF" fontSize="8" onClick="rolarFate(self.per5_1.text, self.per5_1v.text)"/>
+                                        <button align="right" width="24" height="24" text="dF" fontSize="10" onClick="rolarFate(self.per5_1.text, self.per5_1v.text)"/>
                                     </layout>
                                 </layout>
 
                                 <!-- Nível +4 — 2 slots -->
                                 <layout align="top" height="56" name="rowNivel_4" margins="{bottom=2}">
-                                    <label text="+4" align="left" width="24" fontSize="9" fontColor="#b9151f" fontStyle="bold" vertTextAlign="center" horzTextAlign="trailing" margins="{right=4}"/>
-                                    <label text="Ótimo" align="left" width="52" fontSize="7" fontColor="Gray" vertTextAlign="center" margins="{right=4}"/>
+                                    <label text="+4" align="left" width="24" fontSize="11" fontColor="#b9151f" fontStyle="bold" vertTextAlign="center" horzTextAlign="trailing" margins="{right=4}"/>
+                                    <label text="Ótimo" align="left" width="52" fontSize="10" fontColor="Gray" vertTextAlign="center" margins="{right=4}"/>
                                     <layout align="client">
                                         <layout align="top" height="24" margins="{bottom=4}">
                                             <edit align="client" field="per4_1" hint="perícia" fontSize="10" margins="{right=2}"/>
                                             <edit align="right" width="24" field="per4_1v" hint="0" horzTextAlign="center" fontSize="10" margins="{right=2}"/>
-                                            <button align="right" width="24" height="24" text="dF" fontSize="8" onClick="rolarFate(self.per4_1.text, self.per4_1v.text)"/>
+                                            <button align="right" width="24" height="24" text="dF" fontSize="10" onClick="rolarFate(self.per4_1.text, self.per4_1v.text)"/>
                                         </layout>
                                         <layout align="top" height="24">
                                             <edit align="client" field="per4_2" hint="perícia" fontSize="10" margins="{right=2}"/>
                                             <edit align="right" width="24" field="per4_2v" hint="0" horzTextAlign="center" fontSize="10" margins="{right=2}"/>
-                                            <button align="right" width="24" height="24" text="dF" fontSize="8" onClick="rolarFate(self.per4_2.text, self.per4_2v.text)"/>
+                                            <button align="right" width="24" height="24" text="dF" fontSize="10" onClick="rolarFate(self.per4_2.text, self.per4_2v.text)"/>
                                         </layout>
                                     </layout>
                                 </layout>
 
                                 <!-- Nível +3 — 3 slots -->
                                 <layout align="top" height="84" name="rowNivel_3" margins="{bottom=2}">
-                                    <label text="+3" align="left" width="24" fontSize="9" fontColor="#b9151f" fontStyle="bold" vertTextAlign="center" horzTextAlign="trailing" margins="{right=4}"/>
-                                    <label text="Bom" align="left" width="52" fontSize="7" fontColor="Gray" vertTextAlign="center" margins="{right=4}"/>
+                                    <label text="+3" align="left" width="24" fontSize="11" fontColor="#b9151f" fontStyle="bold" vertTextAlign="center" horzTextAlign="trailing" margins="{right=4}"/>
+                                    <label text="Bom" align="left" width="52" fontSize="10" fontColor="Gray" vertTextAlign="center" margins="{right=4}"/>
                                     <layout align="client">
                                         <layout align="top" height="24" margins="{bottom=4}">
                                             <edit align="client" field="per3_1" hint="perícia" fontSize="10" margins="{right=2}"/>
                                             <edit align="right" width="24" field="per3_1v" hint="0" horzTextAlign="center" fontSize="10" margins="{right=2}"/>
-                                            <button align="right" width="24" height="24" text="dF" fontSize="8" onClick="rolarFate(self.per3_1.text, self.per3_1v.text)"/>
+                                            <button align="right" width="24" height="24" text="dF" fontSize="10" onClick="rolarFate(self.per3_1.text, self.per3_1v.text)"/>
                                         </layout>
                                         <layout align="top" height="24" margins="{bottom=4}">
                                             <edit align="client" field="per3_2" hint="perícia" fontSize="10" margins="{right=2}"/>
                                             <edit align="right" width="24" field="per3_2v" hint="0" horzTextAlign="center" fontSize="10" margins="{right=2}"/>
-                                            <button align="right" width="24" height="24" text="dF" fontSize="8" onClick="rolarFate(self.per3_2.text, self.per3_2v.text)"/>
+                                            <button align="right" width="24" height="24" text="dF" fontSize="10" onClick="rolarFate(self.per3_2.text, self.per3_2v.text)"/>
                                         </layout>
                                         <layout align="top" height="24">
                                             <edit align="client" field="per3_3" hint="perícia" fontSize="10" margins="{right=2}"/>
                                             <edit align="right" width="24" field="per3_3v" hint="0" horzTextAlign="center" fontSize="10" margins="{right=2}"/>
-                                            <button align="right" width="24" height="24" text="dF" fontSize="8" onClick="rolarFate(self.per3_3.text, self.per3_3v.text)"/>
+                                            <button align="right" width="24" height="24" text="dF" fontSize="10" onClick="rolarFate(self.per3_3.text, self.per3_3v.text)"/>
                                         </layout>
                                     </layout>
                                 </layout>
 
                                 <!-- Nível +2 — 4 slots -->
                                 <layout align="top" height="112" name="rowNivel_2" margins="{bottom=2}">
-                                    <label text="+2" align="left" width="24" fontSize="9" fontColor="#b9151f" fontStyle="bold" vertTextAlign="center" horzTextAlign="trailing" margins="{right=4}"/>
-                                    <label text="Razoável" align="left" width="52" fontSize="7" fontColor="Gray" vertTextAlign="center" margins="{right=4}"/>
+                                    <label text="+2" align="left" width="24" fontSize="11" fontColor="#b9151f" fontStyle="bold" vertTextAlign="center" horzTextAlign="trailing" margins="{right=4}"/>
+                                    <label text="Razoável" align="left" width="52" fontSize="10" fontColor="Gray" vertTextAlign="center" margins="{right=4}"/>
                                     <layout align="client">
                                         <layout align="top" height="24" margins="{bottom=4}">
                                             <edit align="client" field="per2_1" hint="perícia" fontSize="10" margins="{right=2}"/>
                                             <edit align="right" width="24" field="per2_1v" hint="0" horzTextAlign="center" fontSize="10" margins="{right=2}"/>
-                                            <button align="right" width="24" height="24" text="dF" fontSize="8" onClick="rolarFate(self.per2_1.text, self.per2_1v.text)"/>
+                                            <button align="right" width="24" height="24" text="dF" fontSize="10" onClick="rolarFate(self.per2_1.text, self.per2_1v.text)"/>
                                         </layout>
                                         <layout align="top" height="24" margins="{bottom=4}">
                                             <edit align="client" field="per2_2" hint="perícia" fontSize="10" margins="{right=2}"/>
                                             <edit align="right" width="24" field="per2_2v" hint="0" horzTextAlign="center" fontSize="10" margins="{right=2}"/>
-                                            <button align="right" width="24" height="24" text="dF" fontSize="8" onClick="rolarFate(self.per2_2.text, self.per2_2v.text)"/>
+                                            <button align="right" width="24" height="24" text="dF" fontSize="10" onClick="rolarFate(self.per2_2.text, self.per2_2v.text)"/>
                                         </layout>
                                         <layout align="top" height="24" margins="{bottom=4}">
                                             <edit align="client" field="per2_3" hint="perícia" fontSize="10" margins="{right=2}"/>
                                             <edit align="right" width="24" field="per2_3v" hint="0" horzTextAlign="center" fontSize="10" margins="{right=2}"/>
-                                            <button align="right" width="24" height="24" text="dF" fontSize="8" onClick="rolarFate(self.per2_3.text, self.per2_3v.text)"/>
+                                            <button align="right" width="24" height="24" text="dF" fontSize="10" onClick="rolarFate(self.per2_3.text, self.per2_3v.text)"/>
                                         </layout>
                                         <layout align="top" height="24">
                                             <edit align="client" field="per2_4" hint="perícia" fontSize="10" margins="{right=2}"/>
                                             <edit align="right" width="24" field="per2_4v" hint="0" horzTextAlign="center" fontSize="10" margins="{right=2}"/>
-                                            <button align="right" width="24" height="24" text="dF" fontSize="8" onClick="rolarFate(self.per2_4.text, self.per2_4v.text)"/>
+                                            <button align="right" width="24" height="24" text="dF" fontSize="10" onClick="rolarFate(self.per2_4.text, self.per2_4v.text)"/>
                                         </layout>
                                     </layout>
                                 </layout>
 
                                 <!-- Nível +1 — 5 slots -->
                                 <layout align="top" height="140" name="rowNivel_1" margins="{bottom=2}">
-                                    <label text="+1" align="left" width="24" fontSize="9" fontColor="#b9151f" fontStyle="bold" vertTextAlign="center" horzTextAlign="trailing" margins="{right=4}"/>
-                                    <label text="Regular" align="left" width="52" fontSize="7" fontColor="Gray" vertTextAlign="center" margins="{right=4}"/>
+                                    <label text="+1" align="left" width="24" fontSize="11" fontColor="#b9151f" fontStyle="bold" vertTextAlign="center" horzTextAlign="trailing" margins="{right=4}"/>
+                                    <label text="Regular" align="left" width="52" fontSize="10" fontColor="Gray" vertTextAlign="center" margins="{right=4}"/>
                                     <layout align="client">
                                         <layout align="top" height="24" margins="{bottom=4}">
                                             <edit align="client" field="per1_1" hint="perícia" fontSize="10" margins="{right=2}"/>
                                             <edit align="right" width="24" field="per1_1v" hint="0" horzTextAlign="center" fontSize="10" margins="{right=2}"/>
-                                            <button align="right" width="24" height="24" text="dF" fontSize="8" onClick="rolarFate(self.per1_1.text, self.per1_1v.text)"/>
+                                            <button align="right" width="24" height="24" text="dF" fontSize="10" onClick="rolarFate(self.per1_1.text, self.per1_1v.text)"/>
                                         </layout>
                                         <layout align="top" height="24" margins="{bottom=4}">
                                             <edit align="client" field="per1_2" hint="perícia" fontSize="10" margins="{right=2}"/>
                                             <edit align="right" width="24" field="per1_2v" hint="0" horzTextAlign="center" fontSize="10" margins="{right=2}"/>
-                                            <button align="right" width="24" height="24" text="dF" fontSize="8" onClick="rolarFate(self.per1_2.text, self.per1_2v.text)"/>
+                                            <button align="right" width="24" height="24" text="dF" fontSize="10" onClick="rolarFate(self.per1_2.text, self.per1_2v.text)"/>
                                         </layout>
                                         <layout align="top" height="24" margins="{bottom=4}">
                                             <edit align="client" field="per1_3" hint="perícia" fontSize="10" margins="{right=2}"/>
                                             <edit align="right" width="24" field="per1_3v" hint="0" horzTextAlign="center" fontSize="10" margins="{right=2}"/>
-                                            <button align="right" width="24" height="24" text="dF" fontSize="8" onClick="rolarFate(self.per1_3.text, self.per1_3v.text)"/>
+                                            <button align="right" width="24" height="24" text="dF" fontSize="10" onClick="rolarFate(self.per1_3.text, self.per1_3v.text)"/>
                                         </layout>
                                         <layout align="top" height="24" margins="{bottom=4}">
                                             <edit align="client" field="per1_4" hint="perícia" fontSize="10" margins="{right=2}"/>
                                             <edit align="right" width="24" field="per1_4v" hint="0" horzTextAlign="center" fontSize="10" margins="{right=2}"/>
-                                            <button align="right" width="24" height="24" text="dF" fontSize="8" onClick="rolarFate(self.per1_4.text, self.per1_4v.text)"/>
+                                            <button align="right" width="24" height="24" text="dF" fontSize="10" onClick="rolarFate(self.per1_4.text, self.per1_4v.text)"/>
                                         </layout>
                                         <layout align="top" height="24">
                                             <edit align="client" field="per1_5" hint="perícia" fontSize="10" margins="{right=2}"/>
                                             <edit align="right" width="24" field="per1_5v" hint="0" horzTextAlign="center" fontSize="10" margins="{right=2}"/>
-                                            <button align="right" width="24" height="24" text="dF" fontSize="8" onClick="rolarFate(self.per1_5.text, self.per1_5v.text)"/>
+                                            <button align="right" width="24" height="24" text="dF" fontSize="10" onClick="rolarFate(self.per1_5.text, self.per1_5v.text)"/>
                                         </layout>
                                     </layout>
                                 </layout>
@@ -348,167 +418,211 @@
                             </layout>
                         </layout>
 
-                        <!-- Retrato + Aspectos -->
+                        <!-- Perícias adicionáveis -->
+
+
+                        <!-- Aspectos -->
                         <layout align="client">
 
-                            <!-- Retrato -->
-                            <image align="top" height="160"
-                                   field="retrato" editable="true"
-                                   style="proportional"
-                                   margins="{bottom=8}"/>
+                            <!-- Retrato, estresse e consequências -->
+                            <layout align="top" height="230" margins="{bottom=12}">
+                                <layout align="left" width="180" margins="{right=12}">
+                                    <button align="bottom" height="26" text="Remover imagem"
+                                            fontSize="9" onClick="removerRetrato()" margins="{top=4}"/>
+                                    <rectangle align="client" color="#2B2B2B" strokeColor="#888888"
+                                               strokeSize="2" strokeDash="dash"/>
+                                    <image name="imgRetrato" align="client" field="retrato" editable="true"
+                                           style="proportional" onPictureLoadedChange="atualizarDicaRetrato()"
+                                           onLoad="atualizarDicaRetrato()"/>
+                                    <label name="dicaRetrato" text="Clique aqui para adicionar imagem" align="client"
+                                           fontSize="11" fontColor="#D0D0D0" horzTextAlign="center"
+                                           vertTextAlign="center"/>
+                                </layout>
+                                <layout align="client">
+                                    <layout align="top" height="34" margins="{bottom=6}">
+                                        <label text="Estresse Físico" align="left" width="150" fontSize="11" fontColor="Gray" vertTextAlign="center"/>
+                                        <checkBox name="chkFisicoTopo_1" align="left" width="30" field="stF1" text="1" fontSize="10"/>
+                                        <checkBox name="chkFisicoTopo_2" align="left" width="30" field="stF2" text="2" fontSize="10"/>
+                                        <checkBox name="chkFisicoTopo_3" align="left" width="30" field="stF3" text="3" fontSize="10"/>
+                                        <checkBox name="chkFisicoTopo_4" align="left" width="30" field="stF4" text="4" fontSize="10"/>
+                                        <checkBox name="chkFisicoTopo_5" align="left" width="30" field="stF5" text="5" fontSize="10" visible="false"/>
+                                        <checkBox name="chkFisicoTopo_6" align="left" width="30" field="stF6" text="6" fontSize="10" visible="false"/>
+                                        <checkBox name="chkFisicoTopo_7" align="left" width="30" field="stF7" text="7" fontSize="10" visible="false"/>
+                                        <checkBox name="chkFisicoTopo_8" align="left" width="30" field="stF8" text="8" fontSize="10" visible="false"/>
+                                    </layout>
+                                    <layout align="top" height="34" margins="{bottom=8}">
+                                        <label text="Estresse Mental" align="left" width="150" fontSize="11" fontColor="Gray" vertTextAlign="center"/>
+                                        <checkBox name="chkMentalTopo_1" align="left" width="30" field="stM1" text="1" fontSize="10"/>
+                                        <checkBox name="chkMentalTopo_2" align="left" width="30" field="stM2" text="2" fontSize="10"/>
+                                        <checkBox name="chkMentalTopo_3" align="left" width="30" field="stM3" text="3" fontSize="10"/>
+                                        <checkBox name="chkMentalTopo_4" align="left" width="30" field="stM4" text="4" fontSize="10"/>
+                                        <checkBox name="chkMentalTopo_5" align="left" width="30" field="stM5" text="5" fontSize="10" visible="false"/>
+                                        <checkBox name="chkMentalTopo_6" align="left" width="30" field="stM6" text="6" fontSize="10" visible="false"/>
+                                        <checkBox name="chkMentalTopo_7" align="left" width="30" field="stM7" text="7" fontSize="10" visible="false"/>
+                                        <checkBox name="chkMentalTopo_8" align="left" width="30" field="stM8" text="8" fontSize="10" visible="false"/>
+                                    </layout>
+                                    <layout align="top" height="34" margins="{bottom=6}"><label text="Consequência Suave" align="left" width="150" fontSize="11" fontColor="#b9151f" vertTextAlign="center"/><edit align="client" field="cons_suave" fontSize="12"/></layout>
+                                    <layout align="top" height="34" name="rowConsCSExtraTopo" margins="{bottom=6}"><label text="Consequência Suave extra" align="left" width="150" fontSize="11" fontColor="#b9151f" vertTextAlign="center"/><edit align="client" field="cons_suaveX" fontSize="12"/></layout>
+                                    <layout align="top" height="34" margins="{bottom=6}"><label text="Consequência Moderada" align="left" width="150" fontSize="11" fontColor="#b9151f" vertTextAlign="center"/><edit align="client" field="cons_moderada" fontSize="12"/></layout>
+                                    <layout align="top" height="34"><label text="Consequência Grave" align="left" width="150" fontSize="11" fontColor="#b9151f" vertTextAlign="center"/><edit align="client" field="cons_severa" fontSize="12"/></layout>
+                                </layout>
+                            </layout>
 
                             <!-- Aspectos -->
-                            <label text="Aspectos" align="top" height="18"
-                                   fontSize="9" fontColor="Gray" fontStyle="bold"
-                                   margins="{bottom=4}"/>
+                            <label text="Aspectos" align="top" height="24"
+                                   fontSize="13" fontColor="Gray" fontStyle="bold"
+                                   margins="{bottom=6}"/>
 
-                            <label text="Conceito" align="top" height="12"
-                                   fontSize="7" fontColor="#b9151f" fontStyle="bold"/>
-                            <edit align="top" height="22" field="conceito"
-                                  fontSize="11" margins="{bottom=6}"/>
+                            <label text="Conceito" align="top" height="16"
+                                   fontSize="10" fontColor="#b9151f" fontStyle="bold"/>
+                            <edit align="top" height="28" field="conceito"
+                                  fontSize="13" margins="{bottom=8}"/>
 
-                            <label text="Dificuldade" align="top" height="12"
-                                   fontSize="7" fontColor="#b9151f" fontStyle="bold"/>
-                            <edit align="top" height="22" field="dificuldade"
-                                  fontSize="11" margins="{bottom=6}"/>
+                            <label text="Dificuldade" align="top" height="16"
+                                   fontSize="10" fontColor="#b9151f" fontStyle="bold"/>
+                            <edit align="top" height="28" field="dificuldade"
+                                  fontSize="13" margins="{bottom=8}"/>
 
-                            <layout align="top" height="22" name="rowAspecto_1" margins="{bottom=4}">
-                                <label text="Aspecto" align="top" height="12" fontSize="7" fontColor="Gray" fontStyle="bold"/>
-                                <edit align="client" field="aspecto1" fontSize="10"/>
+                            <layout align="top" height="34" name="rowAspecto_1" margins="{bottom=5}">
+                                <label text="Aspecto" align="top" height="16" fontSize="10" fontColor="Gray" fontStyle="bold"/>
+                                <edit align="client" field="aspecto1" fontSize="13"/>
                             </layout>
-                            <layout align="top" height="22" name="rowAspecto_2" margins="{bottom=4}">
-                                <label text="Aspecto" align="top" height="12" fontSize="7" fontColor="Gray" fontStyle="bold"/>
-                                <edit align="client" field="aspecto2" fontSize="10"/>
+                            <layout align="top" height="34" name="rowAspecto_2" margins="{bottom=5}">
+                                <label text="Aspecto" align="top" height="16" fontSize="10" fontColor="Gray" fontStyle="bold"/>
+                                <edit align="client" field="aspecto2" fontSize="13"/>
                             </layout>
-                            <layout align="top" height="22" name="rowAspecto_3" margins="{bottom=4}">
-                                <label text="Aspecto" align="top" height="12" fontSize="7" fontColor="Gray" fontStyle="bold"/>
-                                <edit align="client" field="aspecto3" fontSize="10"/>
+                            <layout align="top" height="34" name="rowAspecto_3" margins="{bottom=5}">
+                                <label text="Aspecto" align="top" height="16" fontSize="10" fontColor="Gray" fontStyle="bold"/>
+                                <edit align="client" field="aspecto3" fontSize="13"/>
                             </layout>
-                            <layout align="top" height="22" name="rowAspecto_4" visible="false" margins="{bottom=4}">
-                                <label text="Aspecto" align="top" height="12" fontSize="7" fontColor="Gray" fontStyle="bold"/>
-                                <edit align="client" field="aspecto4" fontSize="10"/>
+                            <layout align="top" height="34" name="rowAspecto_4" visible="false" margins="{bottom=5}">
+                                <label text="Aspecto" align="top" height="16" fontSize="10" fontColor="Gray" fontStyle="bold"/>
+                                <edit align="client" field="aspecto4" fontSize="13"/>
                             </layout>
-                            <layout align="top" height="22" name="rowAspecto_5" visible="false" margins="{bottom=4}">
-                                <label text="Aspecto" align="top" height="12" fontSize="7" fontColor="Gray" fontStyle="bold"/>
-                                <edit align="client" field="aspecto5" fontSize="10"/>
+                            <layout align="top" height="34" name="rowAspecto_5" visible="false" margins="{bottom=5}">
+                                <label text="Aspecto" align="top" height="16" fontSize="10" fontColor="Gray" fontStyle="bold"/>
+                                <edit align="client" field="aspecto5" fontSize="13"/>
                             </layout>
-                            <layout align="top" height="22" name="rowAspecto_6" visible="false" margins="{bottom=4}">
-                                <label text="Aspecto" align="top" height="12" fontSize="7" fontColor="Gray" fontStyle="bold"/>
-                                <edit align="client" field="aspecto6" fontSize="10"/>
+                            <layout align="top" height="34" name="rowAspecto_6" visible="false" margins="{bottom=5}">
+                                <label text="Aspecto" align="top" height="16" fontSize="10" fontColor="Gray" fontStyle="bold"/>
+                                <edit align="client" field="aspecto6" fontSize="13"/>
                             </layout>
-                            <layout align="top" height="22" name="rowAspecto_7" visible="false" margins="{bottom=4}">
-                                <label text="Aspecto" align="top" height="12" fontSize="7" fontColor="Gray" fontStyle="bold"/>
-                                <edit align="client" field="aspecto7" fontSize="10"/>
+                            <layout align="top" height="34" name="rowAspecto_7" visible="false" margins="{bottom=5}">
+                                <label text="Aspecto" align="top" height="16" fontSize="10" fontColor="Gray" fontStyle="bold"/>
+                                <edit align="client" field="aspecto7" fontSize="13"/>
                             </layout>
 
                         </layout>
                     </layout>
 
                     <!-- ── Façanhas e Extras ── -->
-                    <layout align="top" height="200" margins="{bottom=8}">
-
-                        <!-- Façanhas -->
-                        <layout align="left" width="260" margins="{right=8}">
-                            <label text="Façanhas" align="top" height="18"
-                                   fontSize="9" fontColor="Gray" fontStyle="bold"
-                                   margins="{bottom=4}"/>
+                    <layout name="listaPericiasFacanhas" align="top" height="600" margins="{bottom=10}">
+                        <layout align="left" width="520" margins="{right=12}">
+                            <layout align="top" height="30" margins="{bottom=6}">
+                                <label text="Perícias" align="left" width="130" fontSize="13" fontColor="Gray" fontStyle="bold" vertTextAlign="center"/>
+                                <button align="right" width="116" height="30" text="+ Adicionar Perícia" fontSize="11" onClick="adicionarPericia()"/>
+                            </layout>
+                            <layout align="top" height="52" name="rowPericia_1" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia1_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(1)" margins="{right=4}"/><edit name="pericia_1_nome" align="client" field="pericia1_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_1_bonus" align="right" width="52" field="pericia1_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_1_nome.text, self.pericia_1_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(1)" margins="{right=4}"/></layout><label name="nivelPericia_1" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_2" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia2_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(2)" margins="{right=4}"/><edit name="pericia_2_nome" align="client" field="pericia2_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_2_bonus" align="right" width="52" field="pericia2_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_2_nome.text, self.pericia_2_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(2)" margins="{right=4}"/></layout><label name="nivelPericia_2" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_3" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia3_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(3)" margins="{right=4}"/><edit name="pericia_3_nome" align="client" field="pericia3_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_3_bonus" align="right" width="52" field="pericia3_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_3_nome.text, self.pericia_3_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(3)" margins="{right=4}"/></layout><label name="nivelPericia_3" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_4" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia4_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(4)" margins="{right=4}"/><edit name="pericia_4_nome" align="client" field="pericia4_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_4_bonus" align="right" width="52" field="pericia4_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_4_nome.text, self.pericia_4_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(4)" margins="{right=4}"/></layout><label name="nivelPericia_4" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_5" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia5_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(5)" margins="{right=4}"/><edit name="pericia_5_nome" align="client" field="pericia5_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_5_bonus" align="right" width="52" field="pericia5_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_5_nome.text, self.pericia_5_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(5)" margins="{right=4}"/></layout><label name="nivelPericia_5" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_6" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia6_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(6)" margins="{right=4}"/><edit name="pericia_6_nome" align="client" field="pericia6_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_6_bonus" align="right" width="52" field="pericia6_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_6_nome.text, self.pericia_6_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(6)" margins="{right=4}"/></layout><label name="nivelPericia_6" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_7" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia7_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(7)" margins="{right=4}"/><edit name="pericia_7_nome" align="client" field="pericia7_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_7_bonus" align="right" width="52" field="pericia7_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_7_nome.text, self.pericia_7_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(7)" margins="{right=4}"/></layout><label name="nivelPericia_7" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_8" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia8_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(8)" margins="{right=4}"/><edit name="pericia_8_nome" align="client" field="pericia8_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_8_bonus" align="right" width="52" field="pericia8_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_8_nome.text, self.pericia_8_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(8)" margins="{right=4}"/></layout><label name="nivelPericia_8" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_9" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia9_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(9)" margins="{right=4}"/><edit name="pericia_9_nome" align="client" field="pericia9_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_9_bonus" align="right" width="52" field="pericia9_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_9_nome.text, self.pericia_9_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(9)" margins="{right=4}"/></layout><label name="nivelPericia_9" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_10" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia10_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(10)" margins="{right=4}"/><edit name="pericia_10_nome" align="client" field="pericia10_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_10_bonus" align="right" width="52" field="pericia10_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_10_nome.text, self.pericia_10_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(10)" margins="{right=4}"/></layout><label name="nivelPericia_10" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_11" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia11_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(11)" margins="{right=4}"/><edit name="pericia_11_nome" align="client" field="pericia11_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_11_bonus" align="right" width="52" field="pericia11_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_11_nome.text, self.pericia_11_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(11)" margins="{right=4}"/></layout><label name="nivelPericia_11" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_12" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia12_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(12)" margins="{right=4}"/><edit name="pericia_12_nome" align="client" field="pericia12_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_12_bonus" align="right" width="52" field="pericia12_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_12_nome.text, self.pericia_12_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(12)" margins="{right=4}"/></layout><label name="nivelPericia_12" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_13" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia13_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(13)" margins="{right=4}"/><edit name="pericia_13_nome" align="client" field="pericia13_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_13_bonus" align="right" width="52" field="pericia13_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_13_nome.text, self.pericia_13_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(13)" margins="{right=4}"/></layout><label name="nivelPericia_13" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_14" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia14_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(14)" margins="{right=4}"/><edit name="pericia_14_nome" align="client" field="pericia14_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_14_bonus" align="right" width="52" field="pericia14_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_14_nome.text, self.pericia_14_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(14)" margins="{right=4}"/></layout><label name="nivelPericia_14" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_15" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia15_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(15)" margins="{right=4}"/><edit name="pericia_15_nome" align="client" field="pericia15_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_15_bonus" align="right" width="52" field="pericia15_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_15_nome.text, self.pericia_15_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(15)" margins="{right=4}"/></layout><label name="nivelPericia_15" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                            <layout align="top" height="52" name="rowPericia_16" visible="false" margins="{bottom=5}"><layout align="top" height="30"><edit align="left" width="52" field="pericia16_valor" hint="Valor" fontSize="12" horzTextAlign="center" onExit="atualizarNivelPericia(16)" margins="{right=4}"/><edit name="pericia_16_nome" align="client" field="pericia16_nome" hint="Nome" fontSize="13" margins="{right=4}"/><edit name="pericia_16_bonus" align="right" width="52" field="pericia16_bonus" hint="Bônus" fontSize="12" horzTextAlign="center" margins="{right=4}"/><button align="right" width="42" text="dF" fontSize="11" onClick="rolarFate(self.pericia_16_nome.text, self.pericia_16_bonus.text)"/><button align="right" width="72" text="Remover" fontSize="10" onClick="removerPericia(16)" margins="{right=4}"/></layout><label name="nivelPericia_16" text="" align="client" fontSize="10" fontColor="Gray"/></layout>
+                        </layout>
+                        <layout align="client" margins="{right=8}">
+                            <layout align="top" height="30" margins="{bottom=6}">
+                                <label text="Façanhas" align="left" width="130"
+                                       fontSize="13" fontColor="Gray" fontStyle="bold" vertTextAlign="center"/>
+                                <button align="right" width="116" height="30" text="+ Adicionar"
+                                        fontSize="11" onClick="adicionarFacanha()"/>
+                            </layout>
                             <layout align="client">
-                                <layout align="top" height="22" name="rowFacanha_1" margins="{bottom=3}"><edit align="client" field="facanha1" fontSize="10"/></layout>
-                                <layout align="top" height="22" name="rowFacanha_2" margins="{bottom=3}"><edit align="client" field="facanha2" fontSize="10"/></layout>
-                                <layout align="top" height="22" name="rowFacanha_3" margins="{bottom=3}"><edit align="client" field="facanha3" fontSize="10"/></layout>
-                                <layout align="top" height="22" name="rowFacanha_4" margins="{bottom=3}"><edit align="client" field="facanha4" fontSize="10"/></layout>
-                                <layout align="top" height="22" name="rowFacanha_5" margins="{bottom=3}"><edit align="client" field="facanha5" fontSize="10"/></layout>
-                                <layout align="top" height="22" name="rowFacanha_6" margins="{bottom=3}"><edit align="client" field="facanha6" fontSize="10"/></layout>
-                                <layout align="top" height="22" name="rowFacanha_7" visible="false" margins="{bottom=3}"><edit align="client" field="facanha7" fontSize="10"/></layout>
-                                <layout align="top" height="22" name="rowFacanha_8" visible="false" margins="{bottom=3}"><edit align="client" field="facanha8" fontSize="10"/></layout>
-                                <layout align="top" height="22" name="rowFacanha_9" visible="false" margins="{bottom=3}"><edit align="client" field="facanha9" fontSize="10"/></layout>
-                                <layout align="top" height="22" name="rowFacanha_10" visible="false"><edit align="client" field="facanha10" fontSize="10"/></layout>
+                                <layout align="top" height="28" name="rowFacanha_1" margins="{bottom=4}"><edit align="client" field="facanha1" fontSize="13" margins="{right=6}"/><button align="right" width="80" text="Remover" fontSize="10" onClick="removerFacanha(1)"/></layout>
+                                <layout align="top" height="28" name="rowFacanha_2" margins="{bottom=4}"><edit align="client" field="facanha2" fontSize="13" margins="{right=6}"/><button align="right" width="80" text="Remover" fontSize="10" onClick="removerFacanha(2)"/></layout>
+                                <layout align="top" height="28" name="rowFacanha_3" margins="{bottom=4}"><edit align="client" field="facanha3" fontSize="13" margins="{right=6}"/><button align="right" width="80" text="Remover" fontSize="10" onClick="removerFacanha(3)"/></layout>
+                                <layout align="top" height="28" name="rowFacanha_4" visible="false" margins="{bottom=4}"><edit align="client" field="facanha4" fontSize="13" margins="{right=6}"/><button align="right" width="80" text="Remover" fontSize="10" onClick="removerFacanha(4)"/></layout>
+                                <layout align="top" height="28" name="rowFacanha_5" visible="false" margins="{bottom=4}"><edit align="client" field="facanha5" fontSize="13" margins="{right=6}"/><button align="right" width="80" text="Remover" fontSize="10" onClick="removerFacanha(5)"/></layout>
+                                <layout align="top" height="28" name="rowFacanha_6" visible="false" margins="{bottom=4}"><edit align="client" field="facanha6" fontSize="13" margins="{right=6}"/><button align="right" width="80" text="Remover" fontSize="10" onClick="removerFacanha(6)"/></layout>
+                                <layout align="top" height="28" name="rowFacanha_7" visible="false" margins="{bottom=4}"><edit align="client" field="facanha7" fontSize="13" margins="{right=6}"/><button align="right" width="80" text="Remover" fontSize="10" onClick="removerFacanha(7)"/></layout>
+                                <layout align="top" height="28" name="rowFacanha_8" visible="false" margins="{bottom=4}"><edit align="client" field="facanha8" fontSize="13" margins="{right=6}"/><button align="right" width="80" text="Remover" fontSize="10" onClick="removerFacanha(8)"/></layout>
+                                <layout align="top" height="28" name="rowFacanha_9" visible="false" margins="{bottom=4}"><edit align="client" field="facanha9" fontSize="13" margins="{right=6}"/><button align="right" width="80" text="Remover" fontSize="10" onClick="removerFacanha(9)"/></layout>
+                                <layout align="top" height="28" name="rowFacanha_10" visible="false"><edit align="client" field="facanha10" fontSize="13" margins="{right=6}"/><button align="right" width="80" text="Remover" fontSize="10" onClick="removerFacanha(10)"/></layout>
                             </layout>
                         </layout>
-
-                        <!-- Extras (lista resumida) -->
-                        <layout align="client">
-                            <label text="Extras" align="top" height="18"
-                                   fontSize="9" fontColor="Gray" fontStyle="bold"
-                                   margins="{bottom=4}"/>
-                            <layout align="client">
-                                <layout align="top" height="22" name="rowExtraL_1" margins="{bottom=3}"><edit align="client" field="extraL1" fontSize="10"/></layout>
-                                <layout align="top" height="22" name="rowExtraL_2" margins="{bottom=3}"><edit align="client" field="extraL2" fontSize="10"/></layout>
-                                <layout align="top" height="22" name="rowExtraL_3" margins="{bottom=3}"><edit align="client" field="extraL3" fontSize="10"/></layout>
-                                <layout align="top" height="22" name="rowExtraL_4" margins="{bottom=3}"><edit align="client" field="extraL4" fontSize="10"/></layout>
-                                <layout align="top" height="22" name="rowExtraL_5" margins="{bottom=3}"><edit align="client" field="extraL5" fontSize="10"/></layout>
-                                <layout align="top" height="22" name="rowExtraL_6" margins="{bottom=3}"><edit align="client" field="extraL6" fontSize="10"/></layout>
-                                <layout align="top" height="22" name="rowExtraL_7" visible="false" margins="{bottom=3}"><edit align="client" field="extraL7" fontSize="10"/></layout>
-                                <layout align="top" height="22" name="rowExtraL_8" visible="false" margins="{bottom=3}"><edit align="client" field="extraL8" fontSize="10"/></layout>
-                                <layout align="top" height="22" name="rowExtraL_9" visible="false" margins="{bottom=3}"><edit align="client" field="extraL9" fontSize="10"/></layout>
-                                <layout align="top" height="22" name="rowExtraL_10" visible="false"><edit align="client" field="extraL10" fontSize="10"/></layout>
-                            </layout>
-                        </layout>
-
                     </layout>
 
                     <!-- ── Estresse e Consequências ── -->
-                    <layout align="top" height="160">
+                    <layout align="top" height="0" visible="false">
 
                         <!-- Estresse -->
                         <layout align="left" width="260" margins="{right=8}">
                             <label text="Estresse" align="top" height="18"
-                                   fontSize="9" fontColor="Gray" fontStyle="bold"
+                                   fontSize="11" fontColor="Gray" fontStyle="bold"
                                    margins="{bottom=6}"/>
 
                             <!-- Físico -->
                             <layout align="top" height="32" margins="{bottom=8}">
                                 <label text="Físico" align="left" width="48"
-                                       fontSize="8" fontColor="Gray" vertTextAlign="center"/>
-                                <checkBox name="chkFisico_1" align="left" width="28" field="stF1" text="1" fontSize="8"/>
-                                <checkBox name="chkFisico_2" align="left" width="28" field="stF2" text="2" fontSize="8"/>
-                                <checkBox name="chkFisico_3" align="left" width="28" field="stF3" text="3" fontSize="8"/>
-                                <checkBox name="chkFisico_4" align="left" width="28" field="stF4" text="4" fontSize="8"/>
-                                <checkBox name="chkFisico_5" align="left" width="28" field="stF5" text="5" fontSize="8" visible="false"/>
-                                <checkBox name="chkFisico_6" align="left" width="28" field="stF6" text="6" fontSize="8" visible="false"/>
-                                <checkBox name="chkFisico_7" align="left" width="28" field="stF7" text="7" fontSize="8" visible="false"/>
-                                <checkBox name="chkFisico_8" align="left" width="28" field="stF8" text="8" fontSize="8" visible="false"/>
+                                       fontSize="10" fontColor="Gray" vertTextAlign="center"/>
+                                <checkBox name="chkFisico_1" align="left" width="28" field="stF1" text="1" fontSize="10"/>
+                                <checkBox name="chkFisico_2" align="left" width="28" field="stF2" text="2" fontSize="10"/>
+                                <checkBox name="chkFisico_3" align="left" width="28" field="stF3" text="3" fontSize="10"/>
+                                <checkBox name="chkFisico_4" align="left" width="28" field="stF4" text="4" fontSize="10"/>
+                                <checkBox name="chkFisico_5" align="left" width="28" field="stF5" text="5" fontSize="10" visible="false"/>
+                                <checkBox name="chkFisico_6" align="left" width="28" field="stF6" text="6" fontSize="10" visible="false"/>
+                                <checkBox name="chkFisico_7" align="left" width="28" field="stF7" text="7" fontSize="10" visible="false"/>
+                                <checkBox name="chkFisico_8" align="left" width="28" field="stF8" text="8" fontSize="10" visible="false"/>
                             </layout>
 
                             <!-- Mental -->
                             <layout align="top" height="32">
                                 <label text="Mental" align="left" width="48"
-                                       fontSize="8" fontColor="Gray" vertTextAlign="center"/>
-                                <checkBox name="chkMental_1" align="left" width="28" field="stM1" text="1" fontSize="8"/>
-                                <checkBox name="chkMental_2" align="left" width="28" field="stM2" text="2" fontSize="8"/>
-                                <checkBox name="chkMental_3" align="left" width="28" field="stM3" text="3" fontSize="8"/>
-                                <checkBox name="chkMental_4" align="left" width="28" field="stM4" text="4" fontSize="8"/>
-                                <checkBox name="chkMental_5" align="left" width="28" field="stM5" text="5" fontSize="8" visible="false"/>
-                                <checkBox name="chkMental_6" align="left" width="28" field="stM6" text="6" fontSize="8" visible="false"/>
-                                <checkBox name="chkMental_7" align="left" width="28" field="stM7" text="7" fontSize="8" visible="false"/>
-                                <checkBox name="chkMental_8" align="left" width="28" field="stM8" text="8" fontSize="8" visible="false"/>
+                                       fontSize="10" fontColor="Gray" vertTextAlign="center"/>
+                                <checkBox name="chkMental_1" align="left" width="28" field="stM1" text="1" fontSize="10"/>
+                                <checkBox name="chkMental_2" align="left" width="28" field="stM2" text="2" fontSize="10"/>
+                                <checkBox name="chkMental_3" align="left" width="28" field="stM3" text="3" fontSize="10"/>
+                                <checkBox name="chkMental_4" align="left" width="28" field="stM4" text="4" fontSize="10"/>
+                                <checkBox name="chkMental_5" align="left" width="28" field="stM5" text="5" fontSize="10" visible="false"/>
+                                <checkBox name="chkMental_6" align="left" width="28" field="stM6" text="6" fontSize="10" visible="false"/>
+                                <checkBox name="chkMental_7" align="left" width="28" field="stM7" text="7" fontSize="10" visible="false"/>
+                                <checkBox name="chkMental_8" align="left" width="28" field="stM8" text="8" fontSize="10" visible="false"/>
                             </layout>
                         </layout>
 
                         <!-- Consequências -->
                         <layout align="client">
                             <label text="Consequências" align="top" height="18"
-                                   fontSize="9" fontColor="Gray" fontStyle="bold"
+                                   fontSize="11" fontColor="Gray" fontStyle="bold"
                                    margins="{bottom=4}"/>
 
                             <layout align="top" height="26" margins="{bottom=4}">
                                 <label text="[2] Suave" align="left" width="72"
-                                       fontSize="8" fontColor="#b9151f" vertTextAlign="center"/>
+                                       fontSize="10" fontColor="#b9151f" vertTextAlign="center"/>
                                 <edit align="client" field="cons_suave" fontSize="10"/>
                             </layout>
                             <layout align="top" height="26" name="rowConsCSExtra" margins="{bottom=4}">
                                 <label text="[2] Suave+" align="left" width="72"
-                                       fontSize="8" fontColor="#b9151f" vertTextAlign="center"/>
+                                       fontSize="10" fontColor="#b9151f" vertTextAlign="center"/>
                                 <edit align="client" field="cons_suaveX" fontSize="10"/>
                             </layout>
                             <layout align="top" height="26" margins="{bottom=4}">
                                 <label text="[4] Moderada" align="left" width="72"
-                                       fontSize="8" fontColor="#b9151f" vertTextAlign="center"/>
+                                       fontSize="10" fontColor="#b9151f" vertTextAlign="center"/>
                                 <edit align="client" field="cons_moderada" fontSize="10"/>
                             </layout>
                             <layout align="top" height="26">
                                 <label text="[6] Severa" align="left" width="72"
-                                       fontSize="8" fontColor="#b9151f" vertTextAlign="center"/>
+                                       fontSize="10" fontColor="#b9151f" vertTextAlign="center"/>
                                 <edit align="client" field="cons_severa" fontSize="10"/>
                             </layout>
                         </layout>
@@ -524,97 +638,79 @@
         <!-- ══════════════════════════════════════════════════════════ -->
         <tab title="Extras">
             <scrollBox align="client">
-                <layout align="client" margins="{left=10, right=10, top=10, bottom=10}">
-                    <label text="Detalhes dos Extras" align="top" height="20"
-                           fontSize="11" fontStyle="bold" margins="{bottom=8}"/>
+                <layout align="top" height="1700" margins="{left=10, right=10, top=10, bottom=10}">
+                    <button align="top" height="34" text="+ Adicionar Extra"
+                            fontSize="12" onClick="adicionarExtra()" margins="{bottom=10}"/>
 
-                    <layout align="top" height="180" margins="{bottom=12}">
-                        <label text="Extra 1" align="left" width="60" fontSize="9"
-                               fontColor="Gray" fontStyle="bold" vertTextAlign="leading" margins="{top=4, right=8}"/>
+                    <layout align="top" height="240" name="rowExtraD_1" visible="false" margins="{bottom=12}">
+                        <label text="Nome" align="top" height="14" fontSize="10" fontColor="Gray"/><layout align="top" height="30" margins="{bottom=6}"><edit align="client" field="extraD1_nome" hint="Título" fontSize="13" margins="{right=6}"/><button align="right" width="90" text="Excluir" fontSize="11" onClick="removerExtra(1)"/></layout>
                         <layout align="client">
-                            <label text="Nome" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <edit align="top" height="22" field="extraD1_nome" fontSize="11" margins="{bottom=4}"/>
-                            <label text="Permissão" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <edit align="top" height="22" field="extraD1_perm" fontSize="10" margins="{bottom=4}"/>
-                            <label text="Custo" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <edit align="top" height="22" field="extraD1_custo" fontSize="10" margins="{bottom=4}"/>
-                            <label text="Descrição" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <textEditor align="client" field="extraD1_desc" fontSize="10"/>
+                            <label text="Permissão" align="top" height="14" fontSize="10" fontColor="Gray"/>
+                            <edit align="top" height="28" field="extraD1_perm" fontSize="12" margins="{bottom=6}"/>
+                            <label text="Custo" align="top" height="14" fontSize="10" fontColor="Gray"/>
+                            <edit align="top" height="28" field="extraD1_custo" fontSize="12" margins="{bottom=6}"/>
+                            <layout align="top" height="18"><label text="Descrição" align="left" width="110" fontSize="10" fontColor="Gray"/><button align="right" width="100" text="Expandir" fontSize="10" onClick="alternarDescricaoExtra(1)"/></layout>
+                            <textEditor align="client" field="extraD1_desc" fontSize="12"/>
                         </layout>
                     </layout>
 
-                    <layout align="top" height="180" margins="{bottom=12}">
-                        <label text="Extra 2" align="left" width="60" fontSize="9"
-                               fontColor="Gray" fontStyle="bold" vertTextAlign="leading" margins="{top=4, right=8}"/>
+                    <layout align="top" height="240" name="rowExtraD_2" visible="false" margins="{bottom=12}">
+                        <label text="Nome" align="top" height="14" fontSize="10" fontColor="Gray"/><layout align="top" height="30" margins="{bottom=6}"><edit align="client" field="extraD2_nome" hint="Título" fontSize="13" margins="{right=6}"/><button align="right" width="90" text="Excluir" fontSize="11" onClick="removerExtra(2)"/></layout>
                         <layout align="client">
-                            <label text="Nome" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <edit align="top" height="22" field="extraD2_nome" fontSize="11" margins="{bottom=4}"/>
-                            <label text="Permissão" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <edit align="top" height="22" field="extraD2_perm" fontSize="10" margins="{bottom=4}"/>
-                            <label text="Custo" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <edit align="top" height="22" field="extraD2_custo" fontSize="10" margins="{bottom=4}"/>
-                            <label text="Descrição" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <textEditor align="client" field="extraD2_desc" fontSize="10"/>
+                            <label text="Permissão" align="top" height="14" fontSize="10" fontColor="Gray"/>
+                            <edit align="top" height="28" field="extraD2_perm" fontSize="12" margins="{bottom=6}"/>
+                            <label text="Custo" align="top" height="14" fontSize="10" fontColor="Gray"/>
+                            <edit align="top" height="28" field="extraD2_custo" fontSize="12" margins="{bottom=6}"/>
+                            <layout align="top" height="18"><label text="Descrição" align="left" width="110" fontSize="10" fontColor="Gray"/><button align="right" width="100" text="Expandir" fontSize="10" onClick="alternarDescricaoExtra(2)"/></layout>
+                            <textEditor align="client" field="extraD2_desc" fontSize="12"/>
                         </layout>
                     </layout>
 
-                    <layout align="top" height="180" margins="{bottom=12}">
-                        <label text="Extra 3" align="left" width="60" fontSize="9"
-                               fontColor="Gray" fontStyle="bold" vertTextAlign="leading" margins="{top=4, right=8}"/>
+                    <layout align="top" height="240" name="rowExtraD_3" visible="false" margins="{bottom=12}">
+                        <label text="Nome" align="top" height="14" fontSize="10" fontColor="Gray"/><layout align="top" height="30" margins="{bottom=6}"><edit align="client" field="extraD3_nome" hint="Título" fontSize="13" margins="{right=6}"/><button align="right" width="90" text="Excluir" fontSize="11" onClick="removerExtra(3)"/></layout>
                         <layout align="client">
-                            <label text="Nome" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <edit align="top" height="22" field="extraD3_nome" fontSize="11" margins="{bottom=4}"/>
-                            <label text="Permissão" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <edit align="top" height="22" field="extraD3_perm" fontSize="10" margins="{bottom=4}"/>
-                            <label text="Custo" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <edit align="top" height="22" field="extraD3_custo" fontSize="10" margins="{bottom=4}"/>
-                            <label text="Descrição" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <textEditor align="client" field="extraD3_desc" fontSize="10"/>
+                            <label text="Permissão" align="top" height="14" fontSize="10" fontColor="Gray"/>
+                            <edit align="top" height="28" field="extraD3_perm" fontSize="12" margins="{bottom=6}"/>
+                            <label text="Custo" align="top" height="14" fontSize="10" fontColor="Gray"/>
+                            <edit align="top" height="28" field="extraD3_custo" fontSize="12" margins="{bottom=6}"/>
+                            <layout align="top" height="18"><label text="Descrição" align="left" width="110" fontSize="10" fontColor="Gray"/><button align="right" width="100" text="Expandir" fontSize="10" onClick="alternarDescricaoExtra(3)"/></layout>
+                            <textEditor align="client" field="extraD3_desc" fontSize="12"/>
                         </layout>
                     </layout>
 
-                    <layout align="top" height="180" margins="{bottom=12}">
-                        <label text="Extra 4" align="left" width="60" fontSize="9"
-                               fontColor="Gray" fontStyle="bold" vertTextAlign="leading" margins="{top=4, right=8}"/>
+                    <layout align="top" height="240" name="rowExtraD_4" visible="false" margins="{bottom=12}">
+                        <label text="Nome" align="top" height="14" fontSize="10" fontColor="Gray"/><layout align="top" height="30" margins="{bottom=6}"><edit align="client" field="extraD4_nome" hint="Título" fontSize="13" margins="{right=6}"/><button align="right" width="90" text="Excluir" fontSize="11" onClick="removerExtra(4)"/></layout>
                         <layout align="client">
-                            <label text="Nome" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <edit align="top" height="22" field="extraD4_nome" fontSize="11" margins="{bottom=4}"/>
-                            <label text="Permissão" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <edit align="top" height="22" field="extraD4_perm" fontSize="10" margins="{bottom=4}"/>
-                            <label text="Custo" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <edit align="top" height="22" field="extraD4_custo" fontSize="10" margins="{bottom=4}"/>
-                            <label text="Descrição" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <textEditor align="client" field="extraD4_desc" fontSize="10"/>
+                            <label text="Permissão" align="top" height="14" fontSize="10" fontColor="Gray"/>
+                            <edit align="top" height="28" field="extraD4_perm" fontSize="12" margins="{bottom=6}"/>
+                            <label text="Custo" align="top" height="14" fontSize="10" fontColor="Gray"/>
+                            <edit align="top" height="28" field="extraD4_custo" fontSize="12" margins="{bottom=6}"/>
+                            <label text="Descrição" align="top" height="14" fontSize="10" fontColor="Gray"/>
+                            <textEditor align="client" field="extraD4_desc" fontSize="12"/>
                         </layout>
                     </layout>
 
-                    <layout align="top" height="180" margins="{bottom=12}">
-                        <label text="Extra 5" align="left" width="60" fontSize="9"
-                               fontColor="Gray" fontStyle="bold" vertTextAlign="leading" margins="{top=4, right=8}"/>
+                    <layout align="top" height="240" name="rowExtraD_5" visible="false" margins="{bottom=12}">
+                        <label text="Nome" align="top" height="14" fontSize="10" fontColor="Gray"/><layout align="top" height="30" margins="{bottom=6}"><edit align="client" field="extraD5_nome" hint="Título" fontSize="13" margins="{right=6}"/><button align="right" width="90" text="Excluir" fontSize="11" onClick="removerExtra(5)"/></layout>
                         <layout align="client">
-                            <label text="Nome" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <edit align="top" height="22" field="extraD5_nome" fontSize="11" margins="{bottom=4}"/>
-                            <label text="Permissão" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <edit align="top" height="22" field="extraD5_perm" fontSize="10" margins="{bottom=4}"/>
-                            <label text="Custo" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <edit align="top" height="22" field="extraD5_custo" fontSize="10" margins="{bottom=4}"/>
-                            <label text="Descrição" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <textEditor align="client" field="extraD5_desc" fontSize="10"/>
+                            <label text="Permissão" align="top" height="14" fontSize="10" fontColor="Gray"/>
+                            <edit align="top" height="28" field="extraD5_perm" fontSize="12" margins="{bottom=6}"/>
+                            <label text="Custo" align="top" height="14" fontSize="10" fontColor="Gray"/>
+                            <edit align="top" height="28" field="extraD5_custo" fontSize="12" margins="{bottom=6}"/>
+                            <label text="Descrição" align="top" height="14" fontSize="10" fontColor="Gray"/>
+                            <textEditor align="client" field="extraD5_desc" fontSize="12"/>
                         </layout>
                     </layout>
 
-                    <layout align="top" height="180">
-                        <label text="Extra 6" align="left" width="60" fontSize="9"
-                               fontColor="Gray" fontStyle="bold" vertTextAlign="leading" margins="{top=4, right=8}"/>
+                    <layout align="top" height="240" name="rowExtraD_6" visible="false">
+                        <label text="Nome" align="top" height="14" fontSize="10" fontColor="Gray"/><layout align="top" height="30" margins="{bottom=6}"><edit align="client" field="extraD6_nome" hint="Título" fontSize="13" margins="{right=6}"/><button align="right" width="90" text="Excluir" fontSize="11" onClick="removerExtra(6)"/></layout>
                         <layout align="client">
-                            <label text="Nome" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <edit align="top" height="22" field="extraD6_nome" fontSize="11" margins="{bottom=4}"/>
-                            <label text="Permissão" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <edit align="top" height="22" field="extraD6_perm" fontSize="10" margins="{bottom=4}"/>
-                            <label text="Custo" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <edit align="top" height="22" field="extraD6_custo" fontSize="10" margins="{bottom=4}"/>
-                            <label text="Descrição" align="top" height="14" fontSize="8" fontColor="Gray"/>
-                            <textEditor align="client" field="extraD6_desc" fontSize="10"/>
+                            <label text="Permissão" align="top" height="14" fontSize="10" fontColor="Gray"/>
+                            <edit align="top" height="28" field="extraD6_perm" fontSize="12" margins="{bottom=6}"/>
+                            <label text="Custo" align="top" height="14" fontSize="10" fontColor="Gray"/>
+                            <edit align="top" height="28" field="extraD6_custo" fontSize="12" margins="{bottom=6}"/>
+                            <label text="Descrição" align="top" height="14" fontSize="10" fontColor="Gray"/>
+                            <textEditor align="client" field="extraD6_desc" fontSize="12"/>
                         </layout>
                     </layout>
 
@@ -625,70 +721,65 @@
         <!-- ══════════════════════════════════════════════════════════ -->
         <!-- ABA 3 — CONFIGURAÇÃO                                      -->
         <!-- ══════════════════════════════════════════════════════════ -->
+
+
+        <tab title="Pessoal">
+            <scrollBox align="client">
+                <layout align="top" height="1110" margins="{left=10, right=10, top=10, bottom=10}">
+
+                    <label text="IDENTIFICAÇÃO" align="top" height="22" fontSize="13" fontColor="#b9151f" fontStyle="bold" margins="{bottom=6}"/>
+                    <layout align="top" height="54" margins="{bottom=6}">
+                        <layout align="left" width="380" margins="{right=4}"><label text="Nome" align="top" height="18" fontSize="11" fontColor="Gray"/><edit align="client" field="nome" fontSize="13"/></layout>
+                        <layout align="client" margins="{left=4}"><label text="Nome alternativo / Alcunha" align="top" height="18" fontSize="11" fontColor="Gray"/><edit align="client" field="nomeAlternativo" fontSize="13"/></layout>
+                    </layout>
+                    <layout align="top" height="54" margins="{bottom=6}">
+                        <layout align="left" width="250" margins="{right=4}"><label text="Idade" align="top" height="18" fontSize="11" fontColor="Gray"/><edit align="client" field="idade" fontSize="13"/></layout>
+                        <layout align="left" width="260" margins="{left=4, right=4}"><label text="Gênero" align="top" height="18" fontSize="11" fontColor="Gray"/><edit align="client" field="genero" fontSize="13"/></layout>
+                        <layout align="client" margins="{left=4}"><label text="Espécie / Raça" align="top" height="18" fontSize="11" fontColor="Gray"/><edit align="client" field="especieRaca" fontSize="13"/></layout>
+                    </layout>
+                    <layout align="top" height="54" margins="{bottom=18}">
+                        <layout align="left" width="250" margins="{right=4}"><label text="Ocupação" align="top" height="18" fontSize="11" fontColor="Gray"/><edit align="client" field="ocupacao" fontSize="13"/></layout>
+                        <layout align="left" width="260" margins="{left=4, right=4}"><label text="Origem" align="top" height="18" fontSize="11" fontColor="Gray"/><edit align="client" field="origem" fontSize="13"/></layout>
+                        <layout align="client" margins="{left=4}"><label text="Afiliação" align="top" height="18" fontSize="11" fontColor="Gray"/><edit align="client" field="afiliacao" fontSize="13"/></layout>
+                    </layout>
+
+                    <label text="DESCRIÇÃO DO PERSONAGEM" align="top" height="22" fontSize="13" fontColor="#b9151f" fontStyle="bold" margins="{bottom=6}"/>
+                    <layout align="top" height="112" margins="{bottom=8}">
+                        <layout align="left" width="450" margins="{right=4}"><label text="Aparência" align="top" height="18" fontSize="11" fontColor="Gray"/><textEditor align="client" field="aparencia" fontSize="12"/></layout>
+                        <layout align="client" margins="{left=4}"><label text="Personalidade" align="top" height="18" fontSize="11" fontColor="Gray"/><textEditor align="client" field="personalidade" fontSize="12"/></layout>
+                    </layout>
+                    <layout align="top" height="150" margins="{bottom=8}"><label text="História" align="top" height="18" fontSize="11" fontColor="Gray"/><textEditor align="client" field="historia" fontSize="12"/></layout>
+                    <layout align="top" height="112" margins="{bottom=18}">
+                        <layout align="left" width="450" margins="{right=4}"><label text="Objetivos, Ideais, Medos e Fraquezas" align="top" height="32" fontSize="10" fontColor="Gray"/><textEditor align="client" field="motivacoes" fontSize="12"/></layout>
+                        <layout align="client" margins="{left=4}"><label text="Relacionamentos" align="top" height="18" fontSize="11" fontColor="Gray"/><textEditor align="client" field="relacionamentos" fontSize="12"/></layout>
+                    </layout>
+
+                    <label text="RECURSOS" align="top" height="22" fontSize="13" fontColor="#b9151f" fontStyle="bold" margins="{bottom=6}"/>
+                    <layout align="top" height="112" margins="{bottom=8}"><label text="Equipamentos e Pertences" align="top" height="18" fontSize="11" fontColor="Gray"/><textEditor align="client" field="equipamentosPertences" fontSize="12"/></layout>
+                    <layout align="top" height="112" margins="{bottom=8}"><label text="Aliados e Contatos" align="top" height="18" fontSize="11" fontColor="Gray"/><textEditor align="client" field="aliadosContatos" fontSize="12"/></layout>
+                    <layout align="top" height="112"><label text="Outras Informações" align="top" height="18" fontSize="11" fontColor="Gray"/><textEditor align="client" field="outrasInformacoes" fontSize="12"/></layout>
+
+                </layout>
+            </scrollBox>
+        </tab>
+
         <tab title="Configuração">
             <scrollBox align="client">
                 <layout align="client" margins="{left=12, right=12, top=12, bottom=12}">
-
-                    <label text="Escada de Perícias" align="top" height="20"
-                           fontStyle="bold" fontSize="13"/>
-                    <label text="Define quais níveis da escada aparecem na ficha."
-                           align="top" height="16" fontSize="11" fontColor="Gray" margins="{bottom=8}"/>
-
-                    <layout align="top" height="28" margins="{bottom=8}">
-                        <label text="Nível mínimo (+1 a +4)" align="left" width="180"
-                               fontSize="11" vertTextAlign="center"/>
-                        <edit align="client" field="cfg_escadaMin"
-                              hint="1" horzTextAlign="center"
-                              onExit="aplicarConfig()"/>
-                    </layout>
-                    <layout align="top" height="28" margins="{bottom=16}">
-                        <label text="Nível máximo (+2 a +8)" align="left" width="180"
-                               fontSize="11" vertTextAlign="center"/>
-                        <edit align="client" field="cfg_escadaMax"
-                              hint="5" horzTextAlign="center"
-                              onExit="aplicarConfig()"/>
-                    </layout>
-
-                    <label text="Aspectos" align="top" height="20"
-                           fontStyle="bold" fontSize="13"/>
-                    <layout align="top" height="28" margins="{bottom=16, top=4}">
-                        <label text="Aspectos livres (1 a 7)" align="left" width="180"
-                               fontSize="11" vertTextAlign="center"/>
-                        <edit align="client" field="cfg_aspectos"
-                              hint="3" horzTextAlign="center"
-                              onExit="aplicarConfig()"/>
-                    </layout>
-
-                    <label text="Façanhas e Extras" align="top" height="20"
-                           fontStyle="bold" fontSize="13"/>
-                    <layout align="top" height="28" margins="{bottom=4, top=4}">
-                        <label text="Linhas de façanhas (1 a 10)" align="left" width="180"
-                               fontSize="11" vertTextAlign="center"/>
-                        <edit align="client" field="cfg_facanhas"
-                              hint="6" horzTextAlign="center"
-                              onExit="aplicarConfig()"/>
-                    </layout>
-                    <layout align="top" height="28" margins="{bottom=16}">
-                        <label text="Linhas de extras (1 a 10)" align="left" width="180"
-                               fontSize="11" vertTextAlign="center"/>
-                        <edit align="client" field="cfg_extrasL"
-                              hint="6" horzTextAlign="center"
-                              onExit="aplicarConfig()"/>
-                    </layout>
 
                     <label text="Estresse" align="top" height="20"
                            fontStyle="bold" fontSize="13"/>
                     <layout align="top" height="28" margins="{bottom=4, top=4}">
                         <label text="Caixas Físico (2 a 8)" align="left" width="180"
                                fontSize="11" vertTextAlign="center"/>
-                        <edit align="client" field="cfg_fisico"
+                        <edit align="left" width="54" field="cfg_fisico"
                               hint="4" horzTextAlign="center"
                               onExit="aplicarConfig()"/>
                     </layout>
                     <layout align="top" height="28" margins="{bottom=16}">
                         <label text="Caixas Mental (2 a 8)" align="left" width="180"
                                fontSize="11" vertTextAlign="center"/>
-                        <edit align="client" field="cfg_mental"
+                        <edit align="left" width="54" field="cfg_mental"
                               hint="4" horzTextAlign="center"
                               onExit="aplicarConfig()"/>
                     </layout>
