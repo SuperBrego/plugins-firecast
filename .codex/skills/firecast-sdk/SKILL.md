@@ -9,7 +9,7 @@ Use `docs/Firecast_SDK_-_Single formatado.pdf` como fonte normativa da SDK. Cons
 
 ## Contexto deste projeto
 
-- É um plug-in SDK 3.7b; confirme os metadados e a versão em `module.xml`.
+- É um plug-in SDK 3.7b; cada plug-in tem seu `module.xml` (em `fate_core/`, `markdown_preview/` e `vn_scene/`); confirme os metadados e a versão nele.
 - As fichas e janelas estão em arquivos `.lfm`; o código Lua de uma ficha fica no bloco `<script><![CDATA[...]]></script>` e deve carregar `firecast.lua` quando usar a SDK.
 - `sdk/` contém as pontes Lua da SDK disponibilizadas ao projeto. Leia o módulo relevante para conferir os nomes e a forma de uma API, mas não o altere, exceto quando a solicitação pedir explicitamente mudar a SDK vendorizada.
 - Preserve nomes de controles, campos de nó e `dataType` existentes: eles são contratos entre o layout, os scripts e dados já salvos.

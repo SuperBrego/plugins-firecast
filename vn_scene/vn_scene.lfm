@@ -8,11 +8,14 @@
     <![CDATA[
         require("firecast.lua");
         require("dialogs.lua");
+        require("system.lua");
+        require("ndb.lua");
 
         local MAX_EXTRAS   = 6
+        local SCENE_FORMAT = "VNSCENE1"
         local SLOT_IDS     = { "left", "center", "right" }
         local SLOT_CONFIG_HEIGHT = 152   -- cabeçalho + 3 camadas
-        local CONFIG_BASE_HEIGHT = 616   -- resto da aba de configuração
+        local CONFIG_BASE_HEIGHT = 1000  -- resto da aba de configuração
         local DEFAULT_NPC_COLOR = "#a89fd8"
         local FOCUS_OPACITY = { 1.0, 0.45, 0.25 }
         local DIM_OPACITY   = { 0.18, 0.12, 0.08 }
@@ -32,6 +35,9 @@
         local dialogExpanded = false
         local fadeTargets = {}       -- nome do controle -> opacidade alvo
         local previewCheckRuns = 0
+        local bulkUpdating = false   -- true enquanto vários campos são gravados de uma vez
+        local keysCache = nil
+        local configDocked = false   -- true: painel de configuração está dentro da aba Cena (modo debug)
 
         -- ── Utilitários ──────────────────────────────────────────────
 
@@ -52,6 +58,13 @@
 
         local function normalizeNpcName(name)
             return ((name or ""):gsub("^%s*(.-)%s*$", "%1")):lower()
+        end
+
+        -- O usuário atual tem permissão de escrita nesta ficha?
+        local function canEditSheet()
+            if not sheet then return false end
+            local ok, allowed = pcall(ndb.testPermission, sheet, "write")
+            return ok and allowed == true
         end
 
         local function setSrc(img, url)
@@ -125,12 +138,30 @@
 
         -- ── Foco global entre slots ───────────────────────────────────
 
-        -- activeSlotId = nil escurece todos os slots
-        local function applySlotFocus(activeSlotId)
+        local function getFront(slotId)
+            local value = sheet and sheet["slot_" .. slotId .. "_front"]
+            return tonumber(value) or 1
+        end
+
+        -- activeSlotId = nil escurece todos os slots.
+        -- activeLayer (opcional) destaca essa camada sem reordenar o slot.
+        local function applySlotFocus(activeSlotId, activeLayer)
             for _, sid in ipairs(SLOT_IDS) do
-                local levels = (sid == activeSlotId) and FOCUS_OPACITY or DIM_OPACITY
-                for layer = 1, 3 do
-                    fadeTo("imgSprite_" .. sid .. "_" .. layer, levels[layer])
+                local active = (sid == activeSlotId)
+                local levels = active and FOCUS_OPACITY or DIM_OPACITY
+
+                -- posição atual (1 = frente) da camada que está falando
+                local speakingPos = nil
+                if active and activeLayer then
+                    speakingPos = ((activeLayer - getFront(sid)) % 3) + 1
+                end
+
+                for pos = 1, 3 do
+                    local level = levels[pos]
+                    if speakingPos then
+                        level = (pos == speakingPos) and 1.0 or math.min(level, 0.45)
+                    end
+                    fadeTo("imgSprite_" .. sid .. "_" .. pos, level)
                 end
             end
         end
@@ -138,7 +169,7 @@
         -- ── Botão de foco manual ─────────────────────────────────────
 
         local function setFront(slotId, layer)
-            if not sheet then return end
+            if not canEditSheet() then return end
             local value = tostring(layer)
             local field = "slot_" .. slotId .. "_front"
             if sheet[field] ~= value then sheet[field] = value end
@@ -199,6 +230,7 @@
         -- ── Carrega configurações ────────────────────────────────────
 
         local function loadConfig()
+            if bulkUpdating then return end
             local node = sheet
             setSrc(self.imgBackground, (node and node.bgUrl) or "")
 
@@ -299,10 +331,7 @@
             end
         end
 
-        local function clearConfig()
-            local node = sheet
-            if not node then return end
-
+        local function resetAllFields(node)
             node.bgUrl = ""
 
             for _, slotId in ipairs(SLOT_IDS) do
@@ -315,7 +344,13 @@
                 node["extra_" .. i .. "_url"]   = ""
                 node["extra_" .. i .. "_color"] = DEFAULT_NPC_COLOR
             end
+        end
 
+        local function clearConfig()
+            if not sheet then return end
+            bulkUpdating = true
+            resetAllFields(sheet)
+            bulkUpdating = false
             loadConfig()
         end
 
@@ -348,6 +383,184 @@
             end
 
             loadConfig()
+        end
+
+        -- ── Exportar, importar e cenas salvas ────────────────────────
+
+        -- Campos que compõem uma cena (as cenas salvas ficam fora, em scene_N_*)
+        local function configKeys()
+            if keysCache then return keysCache end
+            local keys = { "bgUrl" }
+            for _, slotId in ipairs(SLOT_IDS) do
+                keys[#keys + 1] = "slot_" .. slotId .. "_visible"
+                keys[#keys + 1] = "slot_" .. slotId .. "_front"
+                for layer = 1, 3 do
+                    keys[#keys + 1] = "slot_" .. slotId .. "_npc"   .. layer
+                    keys[#keys + 1] = "slot_" .. slotId .. "_url"   .. layer
+                    keys[#keys + 1] = "slot_" .. slotId .. "_color" .. layer
+                end
+            end
+            for i = 1, MAX_EXTRAS do
+                keys[#keys + 1] = "extra_" .. i .. "_npc"
+                keys[#keys + 1] = "extra_" .. i .. "_url"
+                keys[#keys + 1] = "extra_" .. i .. "_color"
+            end
+            keysCache = keys
+            return keys
+        end
+
+        local function isBooleanKey(key)
+            return key:sub(-8) == "_visible"
+        end
+
+        -- Texto no formato: primeira linha VNSCENE1, depois uma linha chave=valor por campo
+        local function encodeConfig(node)
+            local lines = { SCENE_FORMAT }
+            for _, key in ipairs(configKeys()) do
+                local value = node[key]
+                if value == nil then value = isBooleanKey(key) and false or "" end
+                value = tostring(value):gsub("[\r\n]+", " ")
+                lines[#lines + 1] = key .. "=" .. value
+            end
+            return table.concat(lines, "\n")
+        end
+
+        local function trim(text)
+            return (text:gsub("^%s*(.-)%s*$", "%1"))
+        end
+
+        -- Devolve tabela chave -> valor, ou nil se o texto não for uma configuração válida
+        local function decodeConfig(text)
+            if type(text) ~= "string" then return nil end
+            text = text:gsub("^\239\187\191", "")   -- remove BOM UTF-8
+
+            local allowed = {}
+            for _, key in ipairs(configKeys()) do allowed[key] = true end
+
+            local values = {}
+            local found = 0
+            local sawHeader = false
+            for rawLine in (text .. "\n"):gmatch("([^\n]*)\n") do
+                local line = trim(rawLine)
+                if line ~= "" then
+                    if not sawHeader then
+                        if line ~= SCENE_FORMAT then return nil end
+                        sawHeader = true
+                    else
+                        local key, value = line:match("^([^=]+)=(.*)$")
+                        key = key and trim(key)
+                        if key and allowed[key] then
+                            values[key] = trim(value)
+                            found = found + 1
+                        end
+                    end
+                end
+            end
+
+            if not sawHeader or found == 0 then return nil end
+            return values
+        end
+
+        local function defaultFor(key)
+            if isBooleanKey(key) then return false end
+            if key:find("_color", 1, true) then return DEFAULT_NPC_COLOR end
+            if key:sub(-6) == "_front" then return "1" end
+            return ""
+        end
+
+        -- Tira o estado temporário (extra em cena, foco dimmerizado) ao trocar de cena
+        local function resetTransientScene()
+            self.imgExtraSprite.visible = false
+            for _, sid in ipairs(SLOT_IDS) do
+                for pos = 1, 3 do
+                    fadeTo("imgSprite_" .. sid .. "_" .. pos, FOCUS_OPACITY[pos])
+                end
+            end
+        end
+
+        -- Grava só o que mudou, sem recarregar a cena a cada campo, e recarrega uma vez no fim
+        local function applyValues(node, values)
+            bulkUpdating = true
+            for _, key in ipairs(configKeys()) do
+                local target = values[key]
+                if target == nil then
+                    target = defaultFor(key)
+                elseif isBooleanKey(key) then
+                    target = (target == "true")
+                end
+                if node[key] ~= target then node[key] = target end
+            end
+            bulkUpdating = false
+            resetTransientScene()
+            loadConfig()
+        end
+
+        local function exportConfig()
+            if not sheet then return end
+            if System.setClipboardText(encodeConfig(sheet)) then
+                showMessage("Configuração copiada. Cole em um arquivo ou mensagem para guardar ou compartilhar.")
+            else
+                showMessage("Não foi possível copiar para a área de transferência.")
+            end
+        end
+
+        local function importConfig()
+            local values = decodeConfig(System.getClipboardText())
+            if not values then
+                showMessage("A área de transferência não tem uma configuração válida. Copie o texto inteiro gerado por 'Exportar'.")
+                return
+            end
+            Dialogs.confirmYesNo("Substituir a configuração atual pela que está na área de transferência?", function(confirmed)
+                if confirmed and sheet then applyValues(sheet, values) end
+            end)
+        end
+
+        local function saveScene(n)
+            local node = sheet
+            if not node then return end
+            local nameKey = "scene_" .. n .. "_name"
+            if normalizeNpcName(node[nameKey] or "") == "" then node[nameKey] = "Cena " .. n end
+            node["scene_" .. n .. "_data"] = encodeConfig(node)
+        end
+
+        local function confirmSaveScene(n)
+            local node = sheet
+            if not node then return end
+            if (node["scene_" .. n .. "_data"] or "") == "" then
+                saveScene(n)
+                return
+            end
+            Dialogs.confirmYesNo("Já existe uma cena neste espaço. Sobrescrever com a configuração atual?", function(confirmed)
+                if confirmed then saveScene(n) end
+            end)
+        end
+
+        local function confirmLoadScene(n)
+            local node = sheet
+            if not node then return end
+            local values = decodeConfig(node["scene_" .. n .. "_data"])
+            if not values then
+                showMessage("Este espaço está vazio. Use 'Salvar' para guardar a cena atual aqui.")
+                return
+            end
+            local name = node["scene_" .. n .. "_name"] or ""
+            if name == "" then name = "Cena " .. n end
+            Dialogs.confirmYesNo("Substituir a configuração atual pela cena \"" .. name .. "\"?", function(confirmed)
+                if confirmed and sheet then applyValues(sheet, values) end
+            end)
+        end
+
+        local function confirmDeleteScene(n)
+            local node = sheet
+            if node and (node["scene_" .. n .. "_data"] or "") == "" and (node["scene_" .. n .. "_name"] or "") == "" then
+                showMessage("Este espaço já está vazio.")
+                return
+            end
+            Dialogs.confirmYesNo("Apagar esta cena salva?", function(confirmed)
+                if not confirmed or not sheet then return end
+                sheet["scene_" .. n .. "_name"] = ""
+                sheet["scene_" .. n .. "_data"] = ""
+            end)
         end
 
         -- ── Diálogo ──────────────────────────────────────────────────
@@ -422,9 +635,13 @@
                     if entry.slot then
                         -- NPC de slot normal
                         local avatarUrl = slotUrls[entry.slot][entry.layer]
-                        setFront(entry.slot, entry.layer)
-                        applySlotOrder(entry.slot, entry.layer)
-                        applySlotFocus(entry.slot)
+                        if sheet and sheet.keepLayerOrder == true then
+                            applySlotFocus(entry.slot, entry.layer)
+                        else
+                            setFront(entry.slot, entry.layer)
+                            applySlotOrder(entry.slot, entry.layer)
+                            applySlotFocus(entry.slot)
+                        end
                         self.imgExtraSprite.visible = false
                         showDialog(npcName, content, avatarUrl)
 
@@ -470,10 +687,65 @@
             self.frmStage.top  = math.max(0, (container.height - 600 * scale) / 2)
         end
 
+        -- Mostra a configuração na aba própria ou, no modo debug, ao lado da cena
+        -- Só o dono da ficha pode editar: nega escrita a todos e libera ao dono.
+        -- Quem aplica é quem tiver permissão para alterar permissões (por padrão, os mestres).
+        local function enforceOwnerOnlyEdit()
+            if not sheet then return end
+            pcall(function()
+                if not ndb.testPermission(sheet, "writePermissions") then return end
+                if ndb.getPermission(sheet, "group", "todos", "write") ~= "deny" then
+                    ndb.setPermission(sheet, "group", "todos", "write", "deny")
+                end
+                if ndb.getPermission(sheet, "group", "dono", "write") ~= "strongAllow" then
+                    ndb.setPermission(sheet, "group", "dono", "write", "strongAllow")
+                end
+            end)
+        end
+
+        local function updateEditAccess()
+            local canEdit = canEditSheet()
+            self.panelConfig.enabled = canEdit
+            self.chkHideConfig.enabled = canEdit
+            self.chkDebugMode.enabled = canEdit
+        end
+
         local function updateConfigTab()
-            local visible = not (sheet and sheet.hideConfig == true)
-            self.tabConfig.visible = visible
-            if not visible then self.tcMain.tabIndex = 0 end
+            local showConfig = not (sheet and sheet.hideConfig == true)
+            local debug      = sheet and sheet.debugMode == true
+            local host       = self.sceneContent
+            local panel      = self.panelConfig
+
+            if debug then
+                if host.width <= 0 or host.height <= 0 then return end
+
+                if not configDocked then
+                    panel.parent = host
+                    configDocked = true
+                end
+                panel.visible = showConfig
+
+                if host.width >= 900 then
+                    panel.align = "right"
+                    panel.width = math.max(360, math.min(560, host.width * 0.42))
+                else
+                    panel.align = "bottom"
+                    panel.height = host.height * 0.5
+                end
+
+                self.tabConfig.visible = false
+                self.tcMain.tabIndex = 0
+            else
+                if configDocked then
+                    panel.parent = self.tabConfig
+                    panel.align = "client"
+                    panel.visible = true
+                    configDocked = false
+                end
+
+                self.tabConfig.visible = showConfig
+                if not showConfig then self.tcMain.tabIndex = 0 end
+            end
         end
 
         local function updateSlotLayout()
@@ -502,6 +774,8 @@
         end
 
         local function init()
+            enforceOwnerOnlyEdit()
+            updateEditAccess()
             loadConfig()
             updateSlotLayout()
             updateStageScale()
@@ -591,14 +865,31 @@
         </layout>
     </template>
 
+    <template name="VnSceneRow">
+        <layout align="top" height="28" margins="{bottom=4}">
+            <edit align="client" field="scene_$(n)_name" hint="Nome da cena $(n)" margins="{right=4}"/>
+            <button align="right" width="60" text="Apagar" fontSize="10" margins="{left=4}"
+                    hint="Apaga esta cena salva" onClick="confirmDeleteScene($(n))"/>
+            <button align="right" width="64" text="Carregar" fontSize="10" margins="{left=4}"
+                    hint="Substitui a configuração atual por esta cena" onClick="confirmLoadScene($(n))"/>
+            <button align="right" width="56" text="Salvar" fontSize="10" margins="{left=4}"
+                    hint="Guarda a configuração atual nesta cena" onClick="confirmSaveScene($(n))"/>
+        </layout>
+    </template>
+
     <tabControl align="client" name="tcMain" tabIndex="0">
 
     <!-- ── ABA DA CENA ── -->
     <tab title="Cena">
-    <layout align="client" name="sceneContent">
-    <checkBox align="bottom" height="24" field="hideConfig" text="Ocultar Configuração"
-              hint="Esconde a aba de configuração (útil para jogadores)"
-              margins="{left=8, right=8, top=4, bottom=4}" onChange="updateConfigTab()"/>
+    <layout align="client" name="sceneContent" onResize="updateConfigTab()">
+    <layout align="bottom" height="24" margins="{left=8, right=8, top=4, bottom=4}">
+        <checkBox name="chkHideConfig" align="left" width="190" field="hideConfig" text="Ocultar Configuração"
+                  hint="Esconde a configuração (útil para jogadores)"
+                  onChange="updateConfigTab()"/>
+        <checkBox name="chkDebugMode" align="left" width="340" field="debugMode" text="Modo debug (cena e configuração lado a lado)"
+                  hint="Mostra a configuração ao lado da cena, sem trocar de aba"
+                  onChange="updateConfigTab()"/>
+    </layout>
     <!-- ── CANVAS DA CENA (sempre visível) ── -->
     <layout align="client" name="frmStageContainer" onResize="updateStageScale()">
         <layout left="0" top="0" width="1280" height="600" name="frmStage">
@@ -654,6 +945,10 @@
                           text="Atualizar a cena com mensagens do chat"
                           hint="Quando ligado, as falas do chat atualizam sprites e diálogo"
                           margins="{bottom=8}"/>
+                <checkBox align="top" height="24" field="keepLayerOrder"
+                          text="Manter a ordem das camadas quando alguém fala"
+                          hint="Ligado: o personagem que fala é destacado onde está, sem ir para a frente"
+                          margins="{bottom=8}"/>
                 <label name="labConfigWarning" align="top" height="18" visible="false"
                        fontSize="10" fontColor="#d66" wordWrap="true" margins="{bottom=8}"/>
 
@@ -689,6 +984,27 @@
                 <VnExtraRow n="4" gap="6"/>
                 <VnExtraRow n="5" gap="6"/>
                 <VnExtraRow n="6" gap="16"/>
+
+                <!-- Cenas salvas e transferência -->
+                <label text="Cenas Salvas" align="top" height="20" fontStyle="bold" fontSize="13"/>
+                <label text="Guarde a configuração atual (fundo, slots e extras) com um nome e volte a ela depois."
+                       align="top" height="18" fontSize="11" fontColor="Gray" margins="{bottom=8}"/>
+                <VnSceneRow n="1"/>
+                <VnSceneRow n="2"/>
+                <VnSceneRow n="3"/>
+                <VnSceneRow n="4"/>
+                <VnSceneRow n="5"/>
+                <VnSceneRow n="6"/>
+
+                <label text="Exportar e Importar" align="top" height="20" fontStyle="bold" fontSize="13" margins="{top=12}"/>
+                <label text="Copia a configuração atual como texto, ou aplica um texto copiado de outra ficha."
+                       align="top" height="18" fontSize="11" fontColor="Gray" margins="{bottom=8}"/>
+                <layout align="top" height="28">
+                    <button align="left" width="180" text="Exportar (copiar)" margins="{right=8}"
+                            hint="Copia a configuração atual para a área de transferência" onClick="exportConfig()"/>
+                    <button align="left" width="180" text="Importar (colar)"
+                            hint="Aplica a configuração que está na área de transferência" onClick="importConfig()"/>
+                </layout>
 
             </layout>
         </scrollBox>

@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <module sdkVersion="3.7b">
-    <id>br.GodsCorpse.PluginFirecasts</id>
+    <id>br.GodsCorpse.VNScene</id>
     <version>1.0</version>
 
     <info lang="pt-br">
-        <name>Plugin-Firecasts</name>
-        <description>Fichas Fate Core, Markdown Preview e Visual Novel Scene</description>
+        <name>Visual Novel Scene</name>
+        <description>Cena de apresentação estilo visual novel que acompanha o chat</description>
         <author>GodsCorpse</author>
         <site>https://github.com/SuperBregi</site>
         <contact>GodsCorpse</contact>

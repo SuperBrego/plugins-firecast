@@ -74,4 +74,4 @@ Use Grep em `references/` por nome de função/atributo/evento antes de abrir ar
 - Algumas páginas do PDF dizem "Conteúdo desta página não consta no documento original" (Introdução, Primeiros passos, Histórico de versões, plug-in multi-idioma, `Tag layout`, fontes embutidas). Para essas, não invente: leia `sdk/*.lua` ou diga que a doc não cobre.
 - O texto foi extraído automaticamente: tabelas de propriedades podem ter colunas misturadas; confirme tipo/valor padrão no contexto.
 - O PDF documenta o SDK conforme sua versão; o projeto usa `sdkVersion="3.7b"`. Se `sdk/` tiver funções ausentes na doc (ou vice-versa), prefira o que está em `sdk/`.
-- Ao entregar código, siga o estilo dos `.lfm` existentes (`fate_core.lfm`, `markdown_preview.lfm`, `vn_scene.lfm`): indentação de 4 espaços, scripts em `<script><![CDATA[...]]></script>`, comentários em português.
+- Ao entregar código, siga o estilo dos `.lfm` existentes (`fate_core/fate_core.lfm`, `markdown_preview/markdown_preview.lfm`, `vn_scene/vn_scene.lfm`): indentação de 4 espaços, scripts em `<script><![CDATA[...]]></script>`, comentários em português.

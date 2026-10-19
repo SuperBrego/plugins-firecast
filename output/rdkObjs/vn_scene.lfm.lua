@@ -38,11 +38,13 @@ local function constructNew_frmVNScene()
 
         require("firecast.lua");
         require("dialogs.lua");
+        require("system.lua");
 
         local MAX_EXTRAS   = 6
+        local SCENE_FORMAT = "VNSCENE1"
         local SLOT_IDS     = { "left", "center", "right" }
         local SLOT_CONFIG_HEIGHT = 152   -- cabeçalho + 3 camadas
-        local CONFIG_BASE_HEIGHT = 616   -- resto da aba de configuração
+        local CONFIG_BASE_HEIGHT = 1000  -- resto da aba de configuração
         local DEFAULT_NPC_COLOR = "#a89fd8"
         local FOCUS_OPACITY = { 1.0, 0.45, 0.25 }
         local DIM_OPACITY   = { 0.18, 0.12, 0.08 }
@@ -62,6 +64,9 @@ local function constructNew_frmVNScene()
         local dialogExpanded = false
         local fadeTargets = {}       -- nome do controle -> opacidade alvo
         local previewCheckRuns = 0
+        local bulkUpdating = false   -- true enquanto vários campos são gravados de uma vez
+        local keysCache = nil
+        local configDocked = false   -- true: painel de configuração está dentro da aba Cena (modo debug)
 
         -- ── Utilitários ──────────────────────────────────────────────
 
@@ -155,12 +160,30 @@ local function constructNew_frmVNScene()
 
         -- ── Foco global entre slots ───────────────────────────────────
 
-        -- activeSlotId = nil escurece todos os slots
-        local function applySlotFocus(activeSlotId)
+        local function getFront(slotId)
+            local value = sheet and sheet["slot_" .. slotId .. "_front"]
+            return tonumber(value) or 1
+        end
+
+        -- activeSlotId = nil escurece todos os slots.
+        -- activeLayer (opcional) destaca essa camada sem reordenar o slot.
+        local function applySlotFocus(activeSlotId, activeLayer)
             for _, sid in ipairs(SLOT_IDS) do
-                local levels = (sid == activeSlotId) and FOCUS_OPACITY or DIM_OPACITY
-                for layer = 1, 3 do
-                    fadeTo("imgSprite_" .. sid .. "_" .. layer, levels[layer])
+                local active = (sid == activeSlotId)
+                local levels = active and FOCUS_OPACITY or DIM_OPACITY
+
+                -- posição atual (1 = frente) da camada que está falando
+                local speakingPos = nil
+                if active and activeLayer then
+                    speakingPos = ((activeLayer - getFront(sid)) % 3) + 1
+                end
+
+                for pos = 1, 3 do
+                    local level = levels[pos]
+                    if speakingPos then
+                        level = (pos == speakingPos) and 1.0 or math.min(level, 0.45)
+                    end
+                    fadeTo("imgSprite_" .. sid .. "_" .. pos, level)
                 end
             end
         end
@@ -229,6 +252,7 @@ local function constructNew_frmVNScene()
         -- ── Carrega configurações ────────────────────────────────────
 
         local function loadConfig()
+            if bulkUpdating then return end
             local node = sheet
             setSrc(self.imgBackground, (node and node.bgUrl) or "")
 
@@ -329,10 +353,7 @@ local function constructNew_frmVNScene()
             end
         end
 
-        local function clearConfig()
-            local node = sheet
-            if not node then return end
-
+        local function resetAllFields(node)
             node.bgUrl = ""
 
             for _, slotId in ipairs(SLOT_IDS) do
@@ -345,7 +366,13 @@ local function constructNew_frmVNScene()
                 node["extra_" .. i .. "_url"]   = ""
                 node["extra_" .. i .. "_color"] = DEFAULT_NPC_COLOR
             end
+        end
 
+        local function clearConfig()
+            if not sheet then return end
+            bulkUpdating = true
+            resetAllFields(sheet)
+            bulkUpdating = false
             loadConfig()
         end
 
@@ -378,6 +405,184 @@ local function constructNew_frmVNScene()
             end
 
             loadConfig()
+        end
+
+        -- ── Exportar, importar e cenas salvas ────────────────────────
+
+        -- Campos que compõem uma cena (as cenas salvas ficam fora, em scene_N_*)
+        local function configKeys()
+            if keysCache then return keysCache end
+            local keys = { "bgUrl" }
+            for _, slotId in ipairs(SLOT_IDS) do
+                keys[#keys + 1] = "slot_" .. slotId .. "_visible"
+                keys[#keys + 1] = "slot_" .. slotId .. "_front"
+                for layer = 1, 3 do
+                    keys[#keys + 1] = "slot_" .. slotId .. "_npc"   .. layer
+                    keys[#keys + 1] = "slot_" .. slotId .. "_url"   .. layer
+                    keys[#keys + 1] = "slot_" .. slotId .. "_color" .. layer
+                end
+            end
+            for i = 1, MAX_EXTRAS do
+                keys[#keys + 1] = "extra_" .. i .. "_npc"
+                keys[#keys + 1] = "extra_" .. i .. "_url"
+                keys[#keys + 1] = "extra_" .. i .. "_color"
+            end
+            keysCache = keys
+            return keys
+        end
+
+        local function isBooleanKey(key)
+            return key:sub(-8) == "_visible"
+        end
+
+        -- Texto no formato: primeira linha VNSCENE1, depois uma linha chave=valor por campo
+        local function encodeConfig(node)
+            local lines = { SCENE_FORMAT }
+            for _, key in ipairs(configKeys()) do
+                local value = node[key]
+                if value == nil then value = isBooleanKey(key) and false or "" end
+                value = tostring(value):gsub("[\r\n]+", " ")
+                lines[#lines + 1] = key .. "=" .. value
+            end
+            return table.concat(lines, "\n")
+        end
+
+        local function trim(text)
+            return (text:gsub("^%s*(.-)%s*$", "%1"))
+        end
+
+        -- Devolve tabela chave -> valor, ou nil se o texto não for uma configuração válida
+        local function decodeConfig(text)
+            if type(text) ~= "string" then return nil end
+            text = text:gsub("^\239\187\191", "")   -- remove BOM UTF-8
+
+            local allowed = {}
+            for _, key in ipairs(configKeys()) do allowed[key] = true end
+
+            local values = {}
+            local found = 0
+            local sawHeader = false
+            for rawLine in (text .. "\n"):gmatch("([^\n]*)\n") do
+                local line = trim(rawLine)
+                if line ~= "" then
+                    if not sawHeader then
+                        if line ~= SCENE_FORMAT then return nil end
+                        sawHeader = true
+                    else
+                        local key, value = line:match("^([^=]+)=(.*)$")
+                        key = key and trim(key)
+                        if key and allowed[key] then
+                            values[key] = trim(value)
+                            found = found + 1
+                        end
+                    end
+                end
+            end
+
+            if not sawHeader or found == 0 then return nil end
+            return values
+        end
+
+        local function defaultFor(key)
+            if isBooleanKey(key) then return false end
+            if key:find("_color", 1, true) then return DEFAULT_NPC_COLOR end
+            if key:sub(-6) == "_front" then return "1" end
+            return ""
+        end
+
+        -- Tira o estado temporário (extra em cena, foco dimmerizado) ao trocar de cena
+        local function resetTransientScene()
+            self.imgExtraSprite.visible = false
+            for _, sid in ipairs(SLOT_IDS) do
+                for pos = 1, 3 do
+                    fadeTo("imgSprite_" .. sid .. "_" .. pos, FOCUS_OPACITY[pos])
+                end
+            end
+        end
+
+        -- Grava só o que mudou, sem recarregar a cena a cada campo, e recarrega uma vez no fim
+        local function applyValues(node, values)
+            bulkUpdating = true
+            for _, key in ipairs(configKeys()) do
+                local target = values[key]
+                if target == nil then
+                    target = defaultFor(key)
+                elseif isBooleanKey(key) then
+                    target = (target == "true")
+                end
+                if node[key] ~= target then node[key] = target end
+            end
+            bulkUpdating = false
+            resetTransientScene()
+            loadConfig()
+        end
+
+        local function exportConfig()
+            if not sheet then return end
+            if System.setClipboardText(encodeConfig(sheet)) then
+                showMessage("Configuração copiada. Cole em um arquivo ou mensagem para guardar ou compartilhar.")
+            else
+                showMessage("Não foi possível copiar para a área de transferência.")
+            end
+        end
+
+        local function importConfig()
+            local values = decodeConfig(System.getClipboardText())
+            if not values then
+                showMessage("A área de transferência não tem uma configuração válida. Copie o texto inteiro gerado por 'Exportar'.")
+                return
+            end
+            Dialogs.confirmYesNo("Substituir a configuração atual pela que está na área de transferência?", function(confirmed)
+                if confirmed and sheet then applyValues(sheet, values) end
+            end)
+        end
+
+        local function saveScene(n)
+            local node = sheet
+            if not node then return end
+            local nameKey = "scene_" .. n .. "_name"
+            if normalizeNpcName(node[nameKey] or "") == "" then node[nameKey] = "Cena " .. n end
+            node["scene_" .. n .. "_data"] = encodeConfig(node)
+        end
+
+        local function confirmSaveScene(n)
+            local node = sheet
+            if not node then return end
+            if (node["scene_" .. n .. "_data"] or "") == "" then
+                saveScene(n)
+                return
+            end
+            Dialogs.confirmYesNo("Já existe uma cena neste espaço. Sobrescrever com a configuração atual?", function(confirmed)
+                if confirmed then saveScene(n) end
+            end)
+        end
+
+        local function confirmLoadScene(n)
+            local node = sheet
+            if not node then return end
+            local values = decodeConfig(node["scene_" .. n .. "_data"])
+            if not values then
+                showMessage("Este espaço está vazio. Use 'Salvar' para guardar a cena atual aqui.")
+                return
+            end
+            local name = node["scene_" .. n .. "_name"] or ""
+            if name == "" then name = "Cena " .. n end
+            Dialogs.confirmYesNo("Substituir a configuração atual pela cena \"" .. name .. "\"?", function(confirmed)
+                if confirmed and sheet then applyValues(sheet, values) end
+            end)
+        end
+
+        local function confirmDeleteScene(n)
+            local node = sheet
+            if node and (node["scene_" .. n .. "_data"] or "") == "" and (node["scene_" .. n .. "_name"] or "") == "" then
+                showMessage("Este espaço já está vazio.")
+                return
+            end
+            Dialogs.confirmYesNo("Apagar esta cena salva?", function(confirmed)
+                if not confirmed or not sheet then return end
+                sheet["scene_" .. n .. "_name"] = ""
+                sheet["scene_" .. n .. "_data"] = ""
+            end)
         end
 
         -- ── Diálogo ──────────────────────────────────────────────────
@@ -452,9 +657,13 @@ local function constructNew_frmVNScene()
                     if entry.slot then
                         -- NPC de slot normal
                         local avatarUrl = slotUrls[entry.slot][entry.layer]
-                        setFront(entry.slot, entry.layer)
-                        applySlotOrder(entry.slot, entry.layer)
-                        applySlotFocus(entry.slot)
+                        if sheet and sheet.keepLayerOrder == true then
+                            applySlotFocus(entry.slot, entry.layer)
+                        else
+                            setFront(entry.slot, entry.layer)
+                            applySlotOrder(entry.slot, entry.layer)
+                            applySlotFocus(entry.slot)
+                        end
                         self.imgExtraSprite.visible = false
                         showDialog(npcName, content, avatarUrl)
 
@@ -500,10 +709,43 @@ local function constructNew_frmVNScene()
             self.frmStage.top  = math.max(0, (container.height - 600 * scale) / 2)
         end
 
+        -- Mostra a configuração na aba própria ou, no modo debug, ao lado da cena
         local function updateConfigTab()
-            local visible = not (sheet and sheet.hideConfig == true)
-            self.tabConfig.visible = visible
-            if not visible then self.tcMain.tabIndex = 0 end
+            local showConfig = not (sheet and sheet.hideConfig == true)
+            local debug      = sheet and sheet.debugMode == true
+            local host       = self.sceneContent
+            local panel      = self.panelConfig
+
+            if debug then
+                if host.width <= 0 or host.height <= 0 then return end
+
+                if not configDocked then
+                    panel.parent = host
+                    configDocked = true
+                end
+                panel.visible = showConfig
+
+                if host.width >= 900 then
+                    panel.align = "right"
+                    panel.width = math.max(360, math.min(560, host.width * 0.42))
+                else
+                    panel.align = "bottom"
+                    panel.height = host.height * 0.5
+                end
+
+                self.tabConfig.visible = false
+                self.tcMain.tabIndex = 0
+            else
+                if configDocked then
+                    panel.parent = self.tabConfig
+                    panel.align = "client"
+                    panel.visible = true
+                    configDocked = false
+                end
+
+                self.tabConfig.visible = showConfig
+                if not showConfig then self.tcMain.tabIndex = 0 end
+            end
         end
 
         local function updateSlotLayout()
@@ -588,15 +830,30 @@ local function constructNew_frmVNScene()
     obj.sceneContent:setAlign("client");
     obj.sceneContent:setName("sceneContent");
 
+    obj.layout1 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout1:setParent(obj.sceneContent);
+    obj.layout1:setAlign("bottom");
+    obj.layout1:setHeight(24);
+    obj.layout1:setMargins({left=8, right=8, top=4, bottom=4});
+    obj.layout1:setName("layout1");
+
     obj.checkBox1 = GUI.fromHandle(_obj_newObject("checkBox"));
-    obj.checkBox1:setParent(obj.sceneContent);
-    obj.checkBox1:setAlign("bottom");
-    obj.checkBox1:setHeight(24);
+    obj.checkBox1:setParent(obj.layout1);
+    obj.checkBox1:setAlign("left");
+    obj.checkBox1:setWidth(190);
     obj.checkBox1:setField("hideConfig");
     obj.checkBox1:setText("Ocultar Configuração");
-    obj.checkBox1:setHint("Esconde a aba de configuração (útil para jogadores)");
-    obj.checkBox1:setMargins({left=8, right=8, top=4, bottom=4});
+    obj.checkBox1:setHint("Esconde a configuração (útil para jogadores)");
     obj.checkBox1:setName("checkBox1");
+
+    obj.checkBox2 = GUI.fromHandle(_obj_newObject("checkBox"));
+    obj.checkBox2:setParent(obj.layout1);
+    obj.checkBox2:setAlign("left");
+    obj.checkBox2:setWidth(340);
+    obj.checkBox2:setField("debugMode");
+    obj.checkBox2:setText("Modo debug (cena e configuração lado a lado)");
+    obj.checkBox2:setHint("Mostra a configuração ao lado da cena, sem trocar de aba");
+    obj.checkBox2:setName("checkBox2");
 
     obj.frmStageContainer = GUI.fromHandle(_obj_newObject("layout"));
     obj.frmStageContainer:setParent(obj.sceneContent);
@@ -990,16 +1247,26 @@ local function constructNew_frmVNScene()
     obj.edit1:setMargins({bottom=16});
     obj.edit1:setName("edit1");
 
-    obj.checkBox2 = GUI.fromHandle(_obj_newObject("checkBox"));
-    obj.checkBox2:setParent(obj.configContent);
-    obj.checkBox2:setAlign("top");
-    obj.checkBox2:setHeight(24);
-    obj.checkBox2:setField("listenChat");
-    obj.checkBox2:setChecked(true);
-    obj.checkBox2:setText("Atualizar a cena com mensagens do chat");
-    obj.checkBox2:setHint("Quando ligado, as falas do chat atualizam sprites e diálogo");
-    obj.checkBox2:setMargins({bottom=8});
-    obj.checkBox2:setName("checkBox2");
+    obj.checkBox3 = GUI.fromHandle(_obj_newObject("checkBox"));
+    obj.checkBox3:setParent(obj.configContent);
+    obj.checkBox3:setAlign("top");
+    obj.checkBox3:setHeight(24);
+    obj.checkBox3:setField("listenChat");
+    obj.checkBox3:setChecked(true);
+    obj.checkBox3:setText("Atualizar a cena com mensagens do chat");
+    obj.checkBox3:setHint("Quando ligado, as falas do chat atualizam sprites e diálogo");
+    obj.checkBox3:setMargins({bottom=8});
+    obj.checkBox3:setName("checkBox3");
+
+    obj.checkBox4 = GUI.fromHandle(_obj_newObject("checkBox"));
+    obj.checkBox4:setParent(obj.configContent);
+    obj.checkBox4:setAlign("top");
+    obj.checkBox4:setHeight(24);
+    obj.checkBox4:setField("keepLayerOrder");
+    obj.checkBox4:setText("Manter a ordem das camadas quando alguém fala");
+    obj.checkBox4:setHint("Ligado: o personagem que fala é destacado onde está, sem ir para a frente");
+    obj.checkBox4:setMargins({bottom=8});
+    obj.checkBox4:setName("checkBox4");
 
     obj.labConfigWarning = GUI.fromHandle(_obj_newObject("label"));
     obj.labConfigWarning:setParent(obj.configContent);
@@ -1068,15 +1335,15 @@ local function constructNew_frmVNScene()
     obj.slotConfigLeft:setHeight(152);
     obj.slotConfigLeft:setMargins({right=8});
 
-    obj.layout1 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout1:setParent(obj.slotConfigLeft);
-    obj.layout1:setAlign("top");
-    obj.layout1:setHeight(20);
-    obj.layout1:setMargins({bottom=4});
-    obj.layout1:setName("layout1");
+    obj.layout2 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout2:setParent(obj.slotConfigLeft);
+    obj.layout2:setAlign("top");
+    obj.layout2:setHeight(20);
+    obj.layout2:setMargins({bottom=4});
+    obj.layout2:setName("layout2");
 
     obj.label6 = GUI.fromHandle(_obj_newObject("label"));
-    obj.label6:setParent(obj.layout1);
+    obj.label6:setParent(obj.layout2);
     obj.label6:setText("Esquerda");
     obj.label6:setAlign("left");
     obj.label6:setWidth(70);
@@ -1086,7 +1353,7 @@ local function constructNew_frmVNScene()
     obj.label6:setName("label6");
 
     obj.button2 = GUI.fromHandle(_obj_newObject("button"));
-    obj.button2:setParent(obj.layout1);
+    obj.button2:setParent(obj.layout2);
     obj.button2:setAlign("right");
     obj.button2:setWidth(52);
     obj.button2:setHeight(20);
@@ -1097,7 +1364,7 @@ local function constructNew_frmVNScene()
     obj.button2:setName("button2");
 
     obj.button3 = GUI.fromHandle(_obj_newObject("button"));
-    obj.button3:setParent(obj.layout1);
+    obj.button3:setParent(obj.layout2);
     obj.button3:setAlign("right");
     obj.button3:setWidth(52);
     obj.button3:setHeight(20);
@@ -1107,24 +1374,24 @@ local function constructNew_frmVNScene()
     obj.button3:setHint("Gira as camadas: a da frente vai para trás, e Meio e Atrás sobem");
     obj.button3:setName("button3");
 
-    obj.checkBox3 = GUI.fromHandle(_obj_newObject("checkBox"));
-    obj.checkBox3:setParent(obj.layout1);
-    obj.checkBox3:setAlign("client");
-    obj.checkBox3:setField("slot_left_visible");
-    obj.checkBox3:setText("Visível");
-    obj.checkBox3:setHint("Mostra este slot na cena");
-    obj.checkBox3:setMargins({left=4});
-    obj.checkBox3:setName("checkBox3");
+    obj.checkBox5 = GUI.fromHandle(_obj_newObject("checkBox"));
+    obj.checkBox5:setParent(obj.layout2);
+    obj.checkBox5:setAlign("client");
+    obj.checkBox5:setField("slot_left_visible");
+    obj.checkBox5:setText("Visível");
+    obj.checkBox5:setHint("Mostra este slot na cena");
+    obj.checkBox5:setMargins({left=4});
+    obj.checkBox5:setName("checkBox5");
 
-    obj.layout2 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout2:setParent(obj.slotConfigLeft);
-    obj.layout2:setAlign("top");
-    obj.layout2:setHeight(36);
-    obj.layout2:setMargins({bottom=4});
-    obj.layout2:setName("layout2");
+    obj.layout3 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout3:setParent(obj.slotConfigLeft);
+    obj.layout3:setAlign("top");
+    obj.layout3:setHeight(36);
+    obj.layout3:setMargins({bottom=4});
+    obj.layout3:setName("layout3");
 
     obj.label7 = GUI.fromHandle(_obj_newObject("label"));
-    obj.label7:setParent(obj.layout2);
+    obj.label7:setParent(obj.layout3);
     obj.label7:setText("Frente");
     obj.label7:setAlign("left");
     obj.label7:setWidth(44);
@@ -1134,7 +1401,7 @@ local function constructNew_frmVNScene()
     obj.label7:setName("label7");
 
     obj.edit2 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit2:setParent(obj.layout2);
+    obj.edit2:setParent(obj.layout3);
     obj.edit2:setAlign("left");
     obj.edit2:setWidth(100);
     obj.edit2:setField("slot_left_npc1");
@@ -1143,7 +1410,7 @@ local function constructNew_frmVNScene()
     obj.edit2:setName("edit2");
 
     obj.colorComboBox1 = GUI.fromHandle(_obj_newObject("colorComboBox"));
-    obj.colorComboBox1:setParent(obj.layout2);
+    obj.colorComboBox1:setParent(obj.layout3);
     obj.colorComboBox1:setAlign("left");
     obj.colorComboBox1:setWidth(52);
     obj.colorComboBox1:setField("slot_left_color1");
@@ -1153,30 +1420,30 @@ local function constructNew_frmVNScene()
     obj.colorComboBox1:setName("colorComboBox1");
 
     obj.edit3 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit3:setParent(obj.layout2);
+    obj.edit3:setParent(obj.layout3);
     obj.edit3:setAlign("client");
     obj.edit3:setField("slot_left_url1");
     obj.edit3:setHint("URL");
     obj.edit3:setMargins({right=4});
     obj.edit3:setName("edit3");
 
-    obj.layout3 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout3:setParent(obj.layout2);
-    obj.layout3:setAlign("right");
-    obj.layout3:setWidth(36);
-    obj.layout3:setHeight(36);
-    obj.layout3:setMargins({right=4});
-    obj.layout3:setName("layout3");
+    obj.layout4 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout4:setParent(obj.layout3);
+    obj.layout4:setAlign("right");
+    obj.layout4:setWidth(36);
+    obj.layout4:setHeight(36);
+    obj.layout4:setMargins({right=4});
+    obj.layout4:setName("layout4");
 
     obj.imgPreview_left_1 = GUI.fromHandle(_obj_newObject("image"));
-    obj.imgPreview_left_1:setParent(obj.layout3);
+    obj.imgPreview_left_1:setParent(obj.layout4);
     obj.imgPreview_left_1:setName("imgPreview_left_1");
     obj.imgPreview_left_1:setAlign("client");
     obj.imgPreview_left_1:setStyle("proportional");
     obj.imgPreview_left_1:setSRC("");
 
     obj.labPreviewErr_left_1 = GUI.fromHandle(_obj_newObject("label"));
-    obj.labPreviewErr_left_1:setParent(obj.layout3);
+    obj.labPreviewErr_left_1:setParent(obj.layout4);
     obj.labPreviewErr_left_1:setName("labPreviewErr_left_1");
     obj.labPreviewErr_left_1:setAlign("client");
     obj.labPreviewErr_left_1:setText("!");
@@ -1189,7 +1456,7 @@ local function constructNew_frmVNScene()
     obj.labPreviewErr_left_1:setHint("A imagem não carregou. Confira a URL.");
 
     obj.button4 = GUI.fromHandle(_obj_newObject("button"));
-    obj.button4:setParent(obj.layout2);
+    obj.button4:setParent(obj.layout3);
     obj.button4:setAlign("right");
     obj.button4:setWidth(28);
     obj.button4:setHeight(36);
@@ -1197,15 +1464,15 @@ local function constructNew_frmVNScene()
     obj.button4:setHint("Definir esta camada como a da frente (foco)");
     obj.button4:setName("button4");
 
-    obj.layout4 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout4:setParent(obj.slotConfigLeft);
-    obj.layout4:setAlign("top");
-    obj.layout4:setHeight(36);
-    obj.layout4:setMargins({bottom=4});
-    obj.layout4:setName("layout4");
+    obj.layout5 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout5:setParent(obj.slotConfigLeft);
+    obj.layout5:setAlign("top");
+    obj.layout5:setHeight(36);
+    obj.layout5:setMargins({bottom=4});
+    obj.layout5:setName("layout5");
 
     obj.label8 = GUI.fromHandle(_obj_newObject("label"));
-    obj.label8:setParent(obj.layout4);
+    obj.label8:setParent(obj.layout5);
     obj.label8:setText("Meio");
     obj.label8:setAlign("left");
     obj.label8:setWidth(44);
@@ -1215,7 +1482,7 @@ local function constructNew_frmVNScene()
     obj.label8:setName("label8");
 
     obj.edit4 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit4:setParent(obj.layout4);
+    obj.edit4:setParent(obj.layout5);
     obj.edit4:setAlign("left");
     obj.edit4:setWidth(100);
     obj.edit4:setField("slot_left_npc2");
@@ -1224,7 +1491,7 @@ local function constructNew_frmVNScene()
     obj.edit4:setName("edit4");
 
     obj.colorComboBox2 = GUI.fromHandle(_obj_newObject("colorComboBox"));
-    obj.colorComboBox2:setParent(obj.layout4);
+    obj.colorComboBox2:setParent(obj.layout5);
     obj.colorComboBox2:setAlign("left");
     obj.colorComboBox2:setWidth(52);
     obj.colorComboBox2:setField("slot_left_color2");
@@ -1234,30 +1501,30 @@ local function constructNew_frmVNScene()
     obj.colorComboBox2:setName("colorComboBox2");
 
     obj.edit5 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit5:setParent(obj.layout4);
+    obj.edit5:setParent(obj.layout5);
     obj.edit5:setAlign("client");
     obj.edit5:setField("slot_left_url2");
     obj.edit5:setHint("URL");
     obj.edit5:setMargins({right=4});
     obj.edit5:setName("edit5");
 
-    obj.layout5 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout5:setParent(obj.layout4);
-    obj.layout5:setAlign("right");
-    obj.layout5:setWidth(36);
-    obj.layout5:setHeight(36);
-    obj.layout5:setMargins({right=4});
-    obj.layout5:setName("layout5");
+    obj.layout6 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout6:setParent(obj.layout5);
+    obj.layout6:setAlign("right");
+    obj.layout6:setWidth(36);
+    obj.layout6:setHeight(36);
+    obj.layout6:setMargins({right=4});
+    obj.layout6:setName("layout6");
 
     obj.imgPreview_left_2 = GUI.fromHandle(_obj_newObject("image"));
-    obj.imgPreview_left_2:setParent(obj.layout5);
+    obj.imgPreview_left_2:setParent(obj.layout6);
     obj.imgPreview_left_2:setName("imgPreview_left_2");
     obj.imgPreview_left_2:setAlign("client");
     obj.imgPreview_left_2:setStyle("proportional");
     obj.imgPreview_left_2:setSRC("");
 
     obj.labPreviewErr_left_2 = GUI.fromHandle(_obj_newObject("label"));
-    obj.labPreviewErr_left_2:setParent(obj.layout5);
+    obj.labPreviewErr_left_2:setParent(obj.layout6);
     obj.labPreviewErr_left_2:setName("labPreviewErr_left_2");
     obj.labPreviewErr_left_2:setAlign("client");
     obj.labPreviewErr_left_2:setText("!");
@@ -1270,7 +1537,7 @@ local function constructNew_frmVNScene()
     obj.labPreviewErr_left_2:setHint("A imagem não carregou. Confira a URL.");
 
     obj.button5 = GUI.fromHandle(_obj_newObject("button"));
-    obj.button5:setParent(obj.layout4);
+    obj.button5:setParent(obj.layout5);
     obj.button5:setAlign("right");
     obj.button5:setWidth(28);
     obj.button5:setHeight(36);
@@ -1278,15 +1545,15 @@ local function constructNew_frmVNScene()
     obj.button5:setHint("Definir esta camada como a da frente (foco)");
     obj.button5:setName("button5");
 
-    obj.layout6 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout6:setParent(obj.slotConfigLeft);
-    obj.layout6:setAlign("top");
-    obj.layout6:setHeight(36);
-    obj.layout6:setMargins({bottom=12});
-    obj.layout6:setName("layout6");
+    obj.layout7 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout7:setParent(obj.slotConfigLeft);
+    obj.layout7:setAlign("top");
+    obj.layout7:setHeight(36);
+    obj.layout7:setMargins({bottom=12});
+    obj.layout7:setName("layout7");
 
     obj.label9 = GUI.fromHandle(_obj_newObject("label"));
-    obj.label9:setParent(obj.layout6);
+    obj.label9:setParent(obj.layout7);
     obj.label9:setText("Atrás");
     obj.label9:setAlign("left");
     obj.label9:setWidth(44);
@@ -1296,7 +1563,7 @@ local function constructNew_frmVNScene()
     obj.label9:setName("label9");
 
     obj.edit6 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit6:setParent(obj.layout6);
+    obj.edit6:setParent(obj.layout7);
     obj.edit6:setAlign("left");
     obj.edit6:setWidth(100);
     obj.edit6:setField("slot_left_npc3");
@@ -1305,7 +1572,7 @@ local function constructNew_frmVNScene()
     obj.edit6:setName("edit6");
 
     obj.colorComboBox3 = GUI.fromHandle(_obj_newObject("colorComboBox"));
-    obj.colorComboBox3:setParent(obj.layout6);
+    obj.colorComboBox3:setParent(obj.layout7);
     obj.colorComboBox3:setAlign("left");
     obj.colorComboBox3:setWidth(52);
     obj.colorComboBox3:setField("slot_left_color3");
@@ -1315,30 +1582,30 @@ local function constructNew_frmVNScene()
     obj.colorComboBox3:setName("colorComboBox3");
 
     obj.edit7 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit7:setParent(obj.layout6);
+    obj.edit7:setParent(obj.layout7);
     obj.edit7:setAlign("client");
     obj.edit7:setField("slot_left_url3");
     obj.edit7:setHint("URL");
     obj.edit7:setMargins({right=4});
     obj.edit7:setName("edit7");
 
-    obj.layout7 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout7:setParent(obj.layout6);
-    obj.layout7:setAlign("right");
-    obj.layout7:setWidth(36);
-    obj.layout7:setHeight(36);
-    obj.layout7:setMargins({right=4});
-    obj.layout7:setName("layout7");
+    obj.layout8 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout8:setParent(obj.layout7);
+    obj.layout8:setAlign("right");
+    obj.layout8:setWidth(36);
+    obj.layout8:setHeight(36);
+    obj.layout8:setMargins({right=4});
+    obj.layout8:setName("layout8");
 
     obj.imgPreview_left_3 = GUI.fromHandle(_obj_newObject("image"));
-    obj.imgPreview_left_3:setParent(obj.layout7);
+    obj.imgPreview_left_3:setParent(obj.layout8);
     obj.imgPreview_left_3:setName("imgPreview_left_3");
     obj.imgPreview_left_3:setAlign("client");
     obj.imgPreview_left_3:setStyle("proportional");
     obj.imgPreview_left_3:setSRC("");
 
     obj.labPreviewErr_left_3 = GUI.fromHandle(_obj_newObject("label"));
-    obj.labPreviewErr_left_3:setParent(obj.layout7);
+    obj.labPreviewErr_left_3:setParent(obj.layout8);
     obj.labPreviewErr_left_3:setName("labPreviewErr_left_3");
     obj.labPreviewErr_left_3:setAlign("client");
     obj.labPreviewErr_left_3:setText("!");
@@ -1351,7 +1618,7 @@ local function constructNew_frmVNScene()
     obj.labPreviewErr_left_3:setHint("A imagem não carregou. Confira a URL.");
 
     obj.button6 = GUI.fromHandle(_obj_newObject("button"));
-    obj.button6:setParent(obj.layout6);
+    obj.button6:setParent(obj.layout7);
     obj.button6:setAlign("right");
     obj.button6:setWidth(28);
     obj.button6:setHeight(36);
@@ -1367,15 +1634,15 @@ local function constructNew_frmVNScene()
     obj.slotConfigCenter:setHeight(152);
     obj.slotConfigCenter:setMargins({right=8});
 
-    obj.layout8 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout8:setParent(obj.slotConfigCenter);
-    obj.layout8:setAlign("top");
-    obj.layout8:setHeight(20);
-    obj.layout8:setMargins({bottom=4});
-    obj.layout8:setName("layout8");
+    obj.layout9 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout9:setParent(obj.slotConfigCenter);
+    obj.layout9:setAlign("top");
+    obj.layout9:setHeight(20);
+    obj.layout9:setMargins({bottom=4});
+    obj.layout9:setName("layout9");
 
     obj.label10 = GUI.fromHandle(_obj_newObject("label"));
-    obj.label10:setParent(obj.layout8);
+    obj.label10:setParent(obj.layout9);
     obj.label10:setText("Centro");
     obj.label10:setAlign("left");
     obj.label10:setWidth(70);
@@ -1385,7 +1652,7 @@ local function constructNew_frmVNScene()
     obj.label10:setName("label10");
 
     obj.button7 = GUI.fromHandle(_obj_newObject("button"));
-    obj.button7:setParent(obj.layout8);
+    obj.button7:setParent(obj.layout9);
     obj.button7:setAlign("right");
     obj.button7:setWidth(52);
     obj.button7:setHeight(20);
@@ -1396,7 +1663,7 @@ local function constructNew_frmVNScene()
     obj.button7:setName("button7");
 
     obj.button8 = GUI.fromHandle(_obj_newObject("button"));
-    obj.button8:setParent(obj.layout8);
+    obj.button8:setParent(obj.layout9);
     obj.button8:setAlign("right");
     obj.button8:setWidth(52);
     obj.button8:setHeight(20);
@@ -1406,24 +1673,24 @@ local function constructNew_frmVNScene()
     obj.button8:setHint("Gira as camadas: a da frente vai para trás, e Meio e Atrás sobem");
     obj.button8:setName("button8");
 
-    obj.checkBox4 = GUI.fromHandle(_obj_newObject("checkBox"));
-    obj.checkBox4:setParent(obj.layout8);
-    obj.checkBox4:setAlign("client");
-    obj.checkBox4:setField("slot_center_visible");
-    obj.checkBox4:setText("Visível");
-    obj.checkBox4:setHint("Mostra este slot na cena");
-    obj.checkBox4:setMargins({left=4});
-    obj.checkBox4:setName("checkBox4");
+    obj.checkBox6 = GUI.fromHandle(_obj_newObject("checkBox"));
+    obj.checkBox6:setParent(obj.layout9);
+    obj.checkBox6:setAlign("client");
+    obj.checkBox6:setField("slot_center_visible");
+    obj.checkBox6:setText("Visível");
+    obj.checkBox6:setHint("Mostra este slot na cena");
+    obj.checkBox6:setMargins({left=4});
+    obj.checkBox6:setName("checkBox6");
 
-    obj.layout9 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout9:setParent(obj.slotConfigCenter);
-    obj.layout9:setAlign("top");
-    obj.layout9:setHeight(36);
-    obj.layout9:setMargins({bottom=4});
-    obj.layout9:setName("layout9");
+    obj.layout10 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout10:setParent(obj.slotConfigCenter);
+    obj.layout10:setAlign("top");
+    obj.layout10:setHeight(36);
+    obj.layout10:setMargins({bottom=4});
+    obj.layout10:setName("layout10");
 
     obj.label11 = GUI.fromHandle(_obj_newObject("label"));
-    obj.label11:setParent(obj.layout9);
+    obj.label11:setParent(obj.layout10);
     obj.label11:setText("Frente");
     obj.label11:setAlign("left");
     obj.label11:setWidth(44);
@@ -1433,7 +1700,7 @@ local function constructNew_frmVNScene()
     obj.label11:setName("label11");
 
     obj.edit8 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit8:setParent(obj.layout9);
+    obj.edit8:setParent(obj.layout10);
     obj.edit8:setAlign("left");
     obj.edit8:setWidth(100);
     obj.edit8:setField("slot_center_npc1");
@@ -1442,7 +1709,7 @@ local function constructNew_frmVNScene()
     obj.edit8:setName("edit8");
 
     obj.colorComboBox4 = GUI.fromHandle(_obj_newObject("colorComboBox"));
-    obj.colorComboBox4:setParent(obj.layout9);
+    obj.colorComboBox4:setParent(obj.layout10);
     obj.colorComboBox4:setAlign("left");
     obj.colorComboBox4:setWidth(52);
     obj.colorComboBox4:setField("slot_center_color1");
@@ -1452,30 +1719,30 @@ local function constructNew_frmVNScene()
     obj.colorComboBox4:setName("colorComboBox4");
 
     obj.edit9 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit9:setParent(obj.layout9);
+    obj.edit9:setParent(obj.layout10);
     obj.edit9:setAlign("client");
     obj.edit9:setField("slot_center_url1");
     obj.edit9:setHint("URL");
     obj.edit9:setMargins({right=4});
     obj.edit9:setName("edit9");
 
-    obj.layout10 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout10:setParent(obj.layout9);
-    obj.layout10:setAlign("right");
-    obj.layout10:setWidth(36);
-    obj.layout10:setHeight(36);
-    obj.layout10:setMargins({right=4});
-    obj.layout10:setName("layout10");
+    obj.layout11 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout11:setParent(obj.layout10);
+    obj.layout11:setAlign("right");
+    obj.layout11:setWidth(36);
+    obj.layout11:setHeight(36);
+    obj.layout11:setMargins({right=4});
+    obj.layout11:setName("layout11");
 
     obj.imgPreview_center_1 = GUI.fromHandle(_obj_newObject("image"));
-    obj.imgPreview_center_1:setParent(obj.layout10);
+    obj.imgPreview_center_1:setParent(obj.layout11);
     obj.imgPreview_center_1:setName("imgPreview_center_1");
     obj.imgPreview_center_1:setAlign("client");
     obj.imgPreview_center_1:setStyle("proportional");
     obj.imgPreview_center_1:setSRC("");
 
     obj.labPreviewErr_center_1 = GUI.fromHandle(_obj_newObject("label"));
-    obj.labPreviewErr_center_1:setParent(obj.layout10);
+    obj.labPreviewErr_center_1:setParent(obj.layout11);
     obj.labPreviewErr_center_1:setName("labPreviewErr_center_1");
     obj.labPreviewErr_center_1:setAlign("client");
     obj.labPreviewErr_center_1:setText("!");
@@ -1488,7 +1755,7 @@ local function constructNew_frmVNScene()
     obj.labPreviewErr_center_1:setHint("A imagem não carregou. Confira a URL.");
 
     obj.button9 = GUI.fromHandle(_obj_newObject("button"));
-    obj.button9:setParent(obj.layout9);
+    obj.button9:setParent(obj.layout10);
     obj.button9:setAlign("right");
     obj.button9:setWidth(28);
     obj.button9:setHeight(36);
@@ -1496,15 +1763,15 @@ local function constructNew_frmVNScene()
     obj.button9:setHint("Definir esta camada como a da frente (foco)");
     obj.button9:setName("button9");
 
-    obj.layout11 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout11:setParent(obj.slotConfigCenter);
-    obj.layout11:setAlign("top");
-    obj.layout11:setHeight(36);
-    obj.layout11:setMargins({bottom=4});
-    obj.layout11:setName("layout11");
+    obj.layout12 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout12:setParent(obj.slotConfigCenter);
+    obj.layout12:setAlign("top");
+    obj.layout12:setHeight(36);
+    obj.layout12:setMargins({bottom=4});
+    obj.layout12:setName("layout12");
 
     obj.label12 = GUI.fromHandle(_obj_newObject("label"));
-    obj.label12:setParent(obj.layout11);
+    obj.label12:setParent(obj.layout12);
     obj.label12:setText("Meio");
     obj.label12:setAlign("left");
     obj.label12:setWidth(44);
@@ -1514,7 +1781,7 @@ local function constructNew_frmVNScene()
     obj.label12:setName("label12");
 
     obj.edit10 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit10:setParent(obj.layout11);
+    obj.edit10:setParent(obj.layout12);
     obj.edit10:setAlign("left");
     obj.edit10:setWidth(100);
     obj.edit10:setField("slot_center_npc2");
@@ -1523,7 +1790,7 @@ local function constructNew_frmVNScene()
     obj.edit10:setName("edit10");
 
     obj.colorComboBox5 = GUI.fromHandle(_obj_newObject("colorComboBox"));
-    obj.colorComboBox5:setParent(obj.layout11);
+    obj.colorComboBox5:setParent(obj.layout12);
     obj.colorComboBox5:setAlign("left");
     obj.colorComboBox5:setWidth(52);
     obj.colorComboBox5:setField("slot_center_color2");
@@ -1533,30 +1800,30 @@ local function constructNew_frmVNScene()
     obj.colorComboBox5:setName("colorComboBox5");
 
     obj.edit11 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit11:setParent(obj.layout11);
+    obj.edit11:setParent(obj.layout12);
     obj.edit11:setAlign("client");
     obj.edit11:setField("slot_center_url2");
     obj.edit11:setHint("URL");
     obj.edit11:setMargins({right=4});
     obj.edit11:setName("edit11");
 
-    obj.layout12 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout12:setParent(obj.layout11);
-    obj.layout12:setAlign("right");
-    obj.layout12:setWidth(36);
-    obj.layout12:setHeight(36);
-    obj.layout12:setMargins({right=4});
-    obj.layout12:setName("layout12");
+    obj.layout13 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout13:setParent(obj.layout12);
+    obj.layout13:setAlign("right");
+    obj.layout13:setWidth(36);
+    obj.layout13:setHeight(36);
+    obj.layout13:setMargins({right=4});
+    obj.layout13:setName("layout13");
 
     obj.imgPreview_center_2 = GUI.fromHandle(_obj_newObject("image"));
-    obj.imgPreview_center_2:setParent(obj.layout12);
+    obj.imgPreview_center_2:setParent(obj.layout13);
     obj.imgPreview_center_2:setName("imgPreview_center_2");
     obj.imgPreview_center_2:setAlign("client");
     obj.imgPreview_center_2:setStyle("proportional");
     obj.imgPreview_center_2:setSRC("");
 
     obj.labPreviewErr_center_2 = GUI.fromHandle(_obj_newObject("label"));
-    obj.labPreviewErr_center_2:setParent(obj.layout12);
+    obj.labPreviewErr_center_2:setParent(obj.layout13);
     obj.labPreviewErr_center_2:setName("labPreviewErr_center_2");
     obj.labPreviewErr_center_2:setAlign("client");
     obj.labPreviewErr_center_2:setText("!");
@@ -1569,7 +1836,7 @@ local function constructNew_frmVNScene()
     obj.labPreviewErr_center_2:setHint("A imagem não carregou. Confira a URL.");
 
     obj.button10 = GUI.fromHandle(_obj_newObject("button"));
-    obj.button10:setParent(obj.layout11);
+    obj.button10:setParent(obj.layout12);
     obj.button10:setAlign("right");
     obj.button10:setWidth(28);
     obj.button10:setHeight(36);
@@ -1577,15 +1844,15 @@ local function constructNew_frmVNScene()
     obj.button10:setHint("Definir esta camada como a da frente (foco)");
     obj.button10:setName("button10");
 
-    obj.layout13 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout13:setParent(obj.slotConfigCenter);
-    obj.layout13:setAlign("top");
-    obj.layout13:setHeight(36);
-    obj.layout13:setMargins({bottom=12});
-    obj.layout13:setName("layout13");
+    obj.layout14 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout14:setParent(obj.slotConfigCenter);
+    obj.layout14:setAlign("top");
+    obj.layout14:setHeight(36);
+    obj.layout14:setMargins({bottom=12});
+    obj.layout14:setName("layout14");
 
     obj.label13 = GUI.fromHandle(_obj_newObject("label"));
-    obj.label13:setParent(obj.layout13);
+    obj.label13:setParent(obj.layout14);
     obj.label13:setText("Atrás");
     obj.label13:setAlign("left");
     obj.label13:setWidth(44);
@@ -1595,7 +1862,7 @@ local function constructNew_frmVNScene()
     obj.label13:setName("label13");
 
     obj.edit12 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit12:setParent(obj.layout13);
+    obj.edit12:setParent(obj.layout14);
     obj.edit12:setAlign("left");
     obj.edit12:setWidth(100);
     obj.edit12:setField("slot_center_npc3");
@@ -1604,7 +1871,7 @@ local function constructNew_frmVNScene()
     obj.edit12:setName("edit12");
 
     obj.colorComboBox6 = GUI.fromHandle(_obj_newObject("colorComboBox"));
-    obj.colorComboBox6:setParent(obj.layout13);
+    obj.colorComboBox6:setParent(obj.layout14);
     obj.colorComboBox6:setAlign("left");
     obj.colorComboBox6:setWidth(52);
     obj.colorComboBox6:setField("slot_center_color3");
@@ -1614,30 +1881,30 @@ local function constructNew_frmVNScene()
     obj.colorComboBox6:setName("colorComboBox6");
 
     obj.edit13 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit13:setParent(obj.layout13);
+    obj.edit13:setParent(obj.layout14);
     obj.edit13:setAlign("client");
     obj.edit13:setField("slot_center_url3");
     obj.edit13:setHint("URL");
     obj.edit13:setMargins({right=4});
     obj.edit13:setName("edit13");
 
-    obj.layout14 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout14:setParent(obj.layout13);
-    obj.layout14:setAlign("right");
-    obj.layout14:setWidth(36);
-    obj.layout14:setHeight(36);
-    obj.layout14:setMargins({right=4});
-    obj.layout14:setName("layout14");
+    obj.layout15 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout15:setParent(obj.layout14);
+    obj.layout15:setAlign("right");
+    obj.layout15:setWidth(36);
+    obj.layout15:setHeight(36);
+    obj.layout15:setMargins({right=4});
+    obj.layout15:setName("layout15");
 
     obj.imgPreview_center_3 = GUI.fromHandle(_obj_newObject("image"));
-    obj.imgPreview_center_3:setParent(obj.layout14);
+    obj.imgPreview_center_3:setParent(obj.layout15);
     obj.imgPreview_center_3:setName("imgPreview_center_3");
     obj.imgPreview_center_3:setAlign("client");
     obj.imgPreview_center_3:setStyle("proportional");
     obj.imgPreview_center_3:setSRC("");
 
     obj.labPreviewErr_center_3 = GUI.fromHandle(_obj_newObject("label"));
-    obj.labPreviewErr_center_3:setParent(obj.layout14);
+    obj.labPreviewErr_center_3:setParent(obj.layout15);
     obj.labPreviewErr_center_3:setName("labPreviewErr_center_3");
     obj.labPreviewErr_center_3:setAlign("client");
     obj.labPreviewErr_center_3:setText("!");
@@ -1650,7 +1917,7 @@ local function constructNew_frmVNScene()
     obj.labPreviewErr_center_3:setHint("A imagem não carregou. Confira a URL.");
 
     obj.button11 = GUI.fromHandle(_obj_newObject("button"));
-    obj.button11:setParent(obj.layout13);
+    obj.button11:setParent(obj.layout14);
     obj.button11:setAlign("right");
     obj.button11:setWidth(28);
     obj.button11:setHeight(36);
@@ -1666,15 +1933,15 @@ local function constructNew_frmVNScene()
     obj.slotConfigRight:setHeight(152);
     obj.slotConfigRight:setMargins({right=0});
 
-    obj.layout15 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout15:setParent(obj.slotConfigRight);
-    obj.layout15:setAlign("top");
-    obj.layout15:setHeight(20);
-    obj.layout15:setMargins({bottom=4});
-    obj.layout15:setName("layout15");
+    obj.layout16 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout16:setParent(obj.slotConfigRight);
+    obj.layout16:setAlign("top");
+    obj.layout16:setHeight(20);
+    obj.layout16:setMargins({bottom=4});
+    obj.layout16:setName("layout16");
 
     obj.label14 = GUI.fromHandle(_obj_newObject("label"));
-    obj.label14:setParent(obj.layout15);
+    obj.label14:setParent(obj.layout16);
     obj.label14:setText("Direita");
     obj.label14:setAlign("left");
     obj.label14:setWidth(70);
@@ -1684,7 +1951,7 @@ local function constructNew_frmVNScene()
     obj.label14:setName("label14");
 
     obj.button12 = GUI.fromHandle(_obj_newObject("button"));
-    obj.button12:setParent(obj.layout15);
+    obj.button12:setParent(obj.layout16);
     obj.button12:setAlign("right");
     obj.button12:setWidth(52);
     obj.button12:setHeight(20);
@@ -1695,7 +1962,7 @@ local function constructNew_frmVNScene()
     obj.button12:setName("button12");
 
     obj.button13 = GUI.fromHandle(_obj_newObject("button"));
-    obj.button13:setParent(obj.layout15);
+    obj.button13:setParent(obj.layout16);
     obj.button13:setAlign("right");
     obj.button13:setWidth(52);
     obj.button13:setHeight(20);
@@ -1705,24 +1972,24 @@ local function constructNew_frmVNScene()
     obj.button13:setHint("Gira as camadas: a da frente vai para trás, e Meio e Atrás sobem");
     obj.button13:setName("button13");
 
-    obj.checkBox5 = GUI.fromHandle(_obj_newObject("checkBox"));
-    obj.checkBox5:setParent(obj.layout15);
-    obj.checkBox5:setAlign("client");
-    obj.checkBox5:setField("slot_right_visible");
-    obj.checkBox5:setText("Visível");
-    obj.checkBox5:setHint("Mostra este slot na cena");
-    obj.checkBox5:setMargins({left=4});
-    obj.checkBox5:setName("checkBox5");
+    obj.checkBox7 = GUI.fromHandle(_obj_newObject("checkBox"));
+    obj.checkBox7:setParent(obj.layout16);
+    obj.checkBox7:setAlign("client");
+    obj.checkBox7:setField("slot_right_visible");
+    obj.checkBox7:setText("Visível");
+    obj.checkBox7:setHint("Mostra este slot na cena");
+    obj.checkBox7:setMargins({left=4});
+    obj.checkBox7:setName("checkBox7");
 
-    obj.layout16 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout16:setParent(obj.slotConfigRight);
-    obj.layout16:setAlign("top");
-    obj.layout16:setHeight(36);
-    obj.layout16:setMargins({bottom=4});
-    obj.layout16:setName("layout16");
+    obj.layout17 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout17:setParent(obj.slotConfigRight);
+    obj.layout17:setAlign("top");
+    obj.layout17:setHeight(36);
+    obj.layout17:setMargins({bottom=4});
+    obj.layout17:setName("layout17");
 
     obj.label15 = GUI.fromHandle(_obj_newObject("label"));
-    obj.label15:setParent(obj.layout16);
+    obj.label15:setParent(obj.layout17);
     obj.label15:setText("Frente");
     obj.label15:setAlign("left");
     obj.label15:setWidth(44);
@@ -1732,7 +1999,7 @@ local function constructNew_frmVNScene()
     obj.label15:setName("label15");
 
     obj.edit14 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit14:setParent(obj.layout16);
+    obj.edit14:setParent(obj.layout17);
     obj.edit14:setAlign("left");
     obj.edit14:setWidth(100);
     obj.edit14:setField("slot_right_npc1");
@@ -1741,7 +2008,7 @@ local function constructNew_frmVNScene()
     obj.edit14:setName("edit14");
 
     obj.colorComboBox7 = GUI.fromHandle(_obj_newObject("colorComboBox"));
-    obj.colorComboBox7:setParent(obj.layout16);
+    obj.colorComboBox7:setParent(obj.layout17);
     obj.colorComboBox7:setAlign("left");
     obj.colorComboBox7:setWidth(52);
     obj.colorComboBox7:setField("slot_right_color1");
@@ -1751,30 +2018,30 @@ local function constructNew_frmVNScene()
     obj.colorComboBox7:setName("colorComboBox7");
 
     obj.edit15 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit15:setParent(obj.layout16);
+    obj.edit15:setParent(obj.layout17);
     obj.edit15:setAlign("client");
     obj.edit15:setField("slot_right_url1");
     obj.edit15:setHint("URL");
     obj.edit15:setMargins({right=4});
     obj.edit15:setName("edit15");
 
-    obj.layout17 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout17:setParent(obj.layout16);
-    obj.layout17:setAlign("right");
-    obj.layout17:setWidth(36);
-    obj.layout17:setHeight(36);
-    obj.layout17:setMargins({right=4});
-    obj.layout17:setName("layout17");
+    obj.layout18 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout18:setParent(obj.layout17);
+    obj.layout18:setAlign("right");
+    obj.layout18:setWidth(36);
+    obj.layout18:setHeight(36);
+    obj.layout18:setMargins({right=4});
+    obj.layout18:setName("layout18");
 
     obj.imgPreview_right_1 = GUI.fromHandle(_obj_newObject("image"));
-    obj.imgPreview_right_1:setParent(obj.layout17);
+    obj.imgPreview_right_1:setParent(obj.layout18);
     obj.imgPreview_right_1:setName("imgPreview_right_1");
     obj.imgPreview_right_1:setAlign("client");
     obj.imgPreview_right_1:setStyle("proportional");
     obj.imgPreview_right_1:setSRC("");
 
     obj.labPreviewErr_right_1 = GUI.fromHandle(_obj_newObject("label"));
-    obj.labPreviewErr_right_1:setParent(obj.layout17);
+    obj.labPreviewErr_right_1:setParent(obj.layout18);
     obj.labPreviewErr_right_1:setName("labPreviewErr_right_1");
     obj.labPreviewErr_right_1:setAlign("client");
     obj.labPreviewErr_right_1:setText("!");
@@ -1787,7 +2054,7 @@ local function constructNew_frmVNScene()
     obj.labPreviewErr_right_1:setHint("A imagem não carregou. Confira a URL.");
 
     obj.button14 = GUI.fromHandle(_obj_newObject("button"));
-    obj.button14:setParent(obj.layout16);
+    obj.button14:setParent(obj.layout17);
     obj.button14:setAlign("right");
     obj.button14:setWidth(28);
     obj.button14:setHeight(36);
@@ -1795,15 +2062,15 @@ local function constructNew_frmVNScene()
     obj.button14:setHint("Definir esta camada como a da frente (foco)");
     obj.button14:setName("button14");
 
-    obj.layout18 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout18:setParent(obj.slotConfigRight);
-    obj.layout18:setAlign("top");
-    obj.layout18:setHeight(36);
-    obj.layout18:setMargins({bottom=4});
-    obj.layout18:setName("layout18");
+    obj.layout19 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout19:setParent(obj.slotConfigRight);
+    obj.layout19:setAlign("top");
+    obj.layout19:setHeight(36);
+    obj.layout19:setMargins({bottom=4});
+    obj.layout19:setName("layout19");
 
     obj.label16 = GUI.fromHandle(_obj_newObject("label"));
-    obj.label16:setParent(obj.layout18);
+    obj.label16:setParent(obj.layout19);
     obj.label16:setText("Meio");
     obj.label16:setAlign("left");
     obj.label16:setWidth(44);
@@ -1813,7 +2080,7 @@ local function constructNew_frmVNScene()
     obj.label16:setName("label16");
 
     obj.edit16 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit16:setParent(obj.layout18);
+    obj.edit16:setParent(obj.layout19);
     obj.edit16:setAlign("left");
     obj.edit16:setWidth(100);
     obj.edit16:setField("slot_right_npc2");
@@ -1822,7 +2089,7 @@ local function constructNew_frmVNScene()
     obj.edit16:setName("edit16");
 
     obj.colorComboBox8 = GUI.fromHandle(_obj_newObject("colorComboBox"));
-    obj.colorComboBox8:setParent(obj.layout18);
+    obj.colorComboBox8:setParent(obj.layout19);
     obj.colorComboBox8:setAlign("left");
     obj.colorComboBox8:setWidth(52);
     obj.colorComboBox8:setField("slot_right_color2");
@@ -1832,30 +2099,30 @@ local function constructNew_frmVNScene()
     obj.colorComboBox8:setName("colorComboBox8");
 
     obj.edit17 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit17:setParent(obj.layout18);
+    obj.edit17:setParent(obj.layout19);
     obj.edit17:setAlign("client");
     obj.edit17:setField("slot_right_url2");
     obj.edit17:setHint("URL");
     obj.edit17:setMargins({right=4});
     obj.edit17:setName("edit17");
 
-    obj.layout19 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout19:setParent(obj.layout18);
-    obj.layout19:setAlign("right");
-    obj.layout19:setWidth(36);
-    obj.layout19:setHeight(36);
-    obj.layout19:setMargins({right=4});
-    obj.layout19:setName("layout19");
+    obj.layout20 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout20:setParent(obj.layout19);
+    obj.layout20:setAlign("right");
+    obj.layout20:setWidth(36);
+    obj.layout20:setHeight(36);
+    obj.layout20:setMargins({right=4});
+    obj.layout20:setName("layout20");
 
     obj.imgPreview_right_2 = GUI.fromHandle(_obj_newObject("image"));
-    obj.imgPreview_right_2:setParent(obj.layout19);
+    obj.imgPreview_right_2:setParent(obj.layout20);
     obj.imgPreview_right_2:setName("imgPreview_right_2");
     obj.imgPreview_right_2:setAlign("client");
     obj.imgPreview_right_2:setStyle("proportional");
     obj.imgPreview_right_2:setSRC("");
 
     obj.labPreviewErr_right_2 = GUI.fromHandle(_obj_newObject("label"));
-    obj.labPreviewErr_right_2:setParent(obj.layout19);
+    obj.labPreviewErr_right_2:setParent(obj.layout20);
     obj.labPreviewErr_right_2:setName("labPreviewErr_right_2");
     obj.labPreviewErr_right_2:setAlign("client");
     obj.labPreviewErr_right_2:setText("!");
@@ -1868,7 +2135,7 @@ local function constructNew_frmVNScene()
     obj.labPreviewErr_right_2:setHint("A imagem não carregou. Confira a URL.");
 
     obj.button15 = GUI.fromHandle(_obj_newObject("button"));
-    obj.button15:setParent(obj.layout18);
+    obj.button15:setParent(obj.layout19);
     obj.button15:setAlign("right");
     obj.button15:setWidth(28);
     obj.button15:setHeight(36);
@@ -1876,15 +2143,15 @@ local function constructNew_frmVNScene()
     obj.button15:setHint("Definir esta camada como a da frente (foco)");
     obj.button15:setName("button15");
 
-    obj.layout20 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout20:setParent(obj.slotConfigRight);
-    obj.layout20:setAlign("top");
-    obj.layout20:setHeight(36);
-    obj.layout20:setMargins({bottom=12});
-    obj.layout20:setName("layout20");
+    obj.layout21 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout21:setParent(obj.slotConfigRight);
+    obj.layout21:setAlign("top");
+    obj.layout21:setHeight(36);
+    obj.layout21:setMargins({bottom=12});
+    obj.layout21:setName("layout21");
 
     obj.label17 = GUI.fromHandle(_obj_newObject("label"));
-    obj.label17:setParent(obj.layout20);
+    obj.label17:setParent(obj.layout21);
     obj.label17:setText("Atrás");
     obj.label17:setAlign("left");
     obj.label17:setWidth(44);
@@ -1894,7 +2161,7 @@ local function constructNew_frmVNScene()
     obj.label17:setName("label17");
 
     obj.edit18 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit18:setParent(obj.layout20);
+    obj.edit18:setParent(obj.layout21);
     obj.edit18:setAlign("left");
     obj.edit18:setWidth(100);
     obj.edit18:setField("slot_right_npc3");
@@ -1903,7 +2170,7 @@ local function constructNew_frmVNScene()
     obj.edit18:setName("edit18");
 
     obj.colorComboBox9 = GUI.fromHandle(_obj_newObject("colorComboBox"));
-    obj.colorComboBox9:setParent(obj.layout20);
+    obj.colorComboBox9:setParent(obj.layout21);
     obj.colorComboBox9:setAlign("left");
     obj.colorComboBox9:setWidth(52);
     obj.colorComboBox9:setField("slot_right_color3");
@@ -1913,30 +2180,30 @@ local function constructNew_frmVNScene()
     obj.colorComboBox9:setName("colorComboBox9");
 
     obj.edit19 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit19:setParent(obj.layout20);
+    obj.edit19:setParent(obj.layout21);
     obj.edit19:setAlign("client");
     obj.edit19:setField("slot_right_url3");
     obj.edit19:setHint("URL");
     obj.edit19:setMargins({right=4});
     obj.edit19:setName("edit19");
 
-    obj.layout21 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout21:setParent(obj.layout20);
-    obj.layout21:setAlign("right");
-    obj.layout21:setWidth(36);
-    obj.layout21:setHeight(36);
-    obj.layout21:setMargins({right=4});
-    obj.layout21:setName("layout21");
+    obj.layout22 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout22:setParent(obj.layout21);
+    obj.layout22:setAlign("right");
+    obj.layout22:setWidth(36);
+    obj.layout22:setHeight(36);
+    obj.layout22:setMargins({right=4});
+    obj.layout22:setName("layout22");
 
     obj.imgPreview_right_3 = GUI.fromHandle(_obj_newObject("image"));
-    obj.imgPreview_right_3:setParent(obj.layout21);
+    obj.imgPreview_right_3:setParent(obj.layout22);
     obj.imgPreview_right_3:setName("imgPreview_right_3");
     obj.imgPreview_right_3:setAlign("client");
     obj.imgPreview_right_3:setStyle("proportional");
     obj.imgPreview_right_3:setSRC("");
 
     obj.labPreviewErr_right_3 = GUI.fromHandle(_obj_newObject("label"));
-    obj.labPreviewErr_right_3:setParent(obj.layout21);
+    obj.labPreviewErr_right_3:setParent(obj.layout22);
     obj.labPreviewErr_right_3:setName("labPreviewErr_right_3");
     obj.labPreviewErr_right_3:setAlign("client");
     obj.labPreviewErr_right_3:setText("!");
@@ -1949,7 +2216,7 @@ local function constructNew_frmVNScene()
     obj.labPreviewErr_right_3:setHint("A imagem não carregou. Confira a URL.");
 
     obj.button16 = GUI.fromHandle(_obj_newObject("button"));
-    obj.button16:setParent(obj.layout20);
+    obj.button16:setParent(obj.layout21);
     obj.button16:setAlign("right");
     obj.button16:setWidth(28);
     obj.button16:setHeight(36);
@@ -1976,15 +2243,15 @@ local function constructNew_frmVNScene()
     obj.label19:setMargins({bottom=8});
     obj.label19:setName("label19");
 
-    obj.layout22 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout22:setParent(obj.configContent);
-    obj.layout22:setAlign("top");
-    obj.layout22:setHeight(18);
-    obj.layout22:setMargins({bottom=4});
-    obj.layout22:setName("layout22");
+    obj.layout23 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout23:setParent(obj.configContent);
+    obj.layout23:setAlign("top");
+    obj.layout23:setHeight(18);
+    obj.layout23:setMargins({bottom=4});
+    obj.layout23:setName("layout23");
 
     obj.label20 = GUI.fromHandle(_obj_newObject("label"));
-    obj.label20:setParent(obj.layout22);
+    obj.label20:setParent(obj.layout23);
     obj.label20:setText("Nome");
     obj.label20:setAlign("left");
     obj.label20:setWidth(100);
@@ -1993,7 +2260,7 @@ local function constructNew_frmVNScene()
     obj.label20:setName("label20");
 
     obj.label21 = GUI.fromHandle(_obj_newObject("label"));
-    obj.label21:setParent(obj.layout22);
+    obj.label21:setParent(obj.layout23);
     obj.label21:setText("Cor");
     obj.label21:setAlign("left");
     obj.label21:setWidth(52);
@@ -2003,7 +2270,7 @@ local function constructNew_frmVNScene()
     obj.label21:setName("label21");
 
     obj.label22 = GUI.fromHandle(_obj_newObject("label"));
-    obj.label22:setParent(obj.layout22);
+    obj.label22:setParent(obj.layout23);
     obj.label22:setText("URL");
     obj.label22:setAlign("client");
     obj.label22:setFontSize(10);
@@ -2012,7 +2279,7 @@ local function constructNew_frmVNScene()
     obj.label22:setName("label22");
 
     obj.label23 = GUI.fromHandle(_obj_newObject("label"));
-    obj.label23:setParent(obj.layout22);
+    obj.label23:setParent(obj.layout23);
     obj.label23:setText("Prev");
     obj.label23:setAlign("right");
     obj.label23:setWidth(36);
@@ -2021,15 +2288,15 @@ local function constructNew_frmVNScene()
     obj.label23:setHorzTextAlign("center");
     obj.label23:setName("label23");
 
-    obj.layout23 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout23:setParent(obj.configContent);
-    obj.layout23:setAlign("top");
-    obj.layout23:setHeight(36);
-    obj.layout23:setMargins({bottom=6});
-    obj.layout23:setName("layout23");
+    obj.layout24 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout24:setParent(obj.configContent);
+    obj.layout24:setAlign("top");
+    obj.layout24:setHeight(36);
+    obj.layout24:setMargins({bottom=6});
+    obj.layout24:setName("layout24");
 
     obj.edit20 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit20:setParent(obj.layout23);
+    obj.edit20:setParent(obj.layout24);
     obj.edit20:setAlign("left");
     obj.edit20:setWidth(100);
     obj.edit20:setField("extra_1_npc");
@@ -2038,7 +2305,7 @@ local function constructNew_frmVNScene()
     obj.edit20:setName("edit20");
 
     obj.colorComboBox10 = GUI.fromHandle(_obj_newObject("colorComboBox"));
-    obj.colorComboBox10:setParent(obj.layout23);
+    obj.colorComboBox10:setParent(obj.layout24);
     obj.colorComboBox10:setAlign("left");
     obj.colorComboBox10:setWidth(52);
     obj.colorComboBox10:setField("extra_1_color");
@@ -2048,29 +2315,29 @@ local function constructNew_frmVNScene()
     obj.colorComboBox10:setName("colorComboBox10");
 
     obj.edit21 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit21:setParent(obj.layout23);
+    obj.edit21:setParent(obj.layout24);
     obj.edit21:setAlign("client");
     obj.edit21:setField("extra_1_url");
     obj.edit21:setHint("URL");
     obj.edit21:setMargins({right=4});
     obj.edit21:setName("edit21");
 
-    obj.layout24 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout24:setParent(obj.layout23);
-    obj.layout24:setAlign("right");
-    obj.layout24:setWidth(36);
-    obj.layout24:setHeight(36);
-    obj.layout24:setName("layout24");
+    obj.layout25 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout25:setParent(obj.layout24);
+    obj.layout25:setAlign("right");
+    obj.layout25:setWidth(36);
+    obj.layout25:setHeight(36);
+    obj.layout25:setName("layout25");
 
     obj.imgPreviewExtra_1 = GUI.fromHandle(_obj_newObject("image"));
-    obj.imgPreviewExtra_1:setParent(obj.layout24);
+    obj.imgPreviewExtra_1:setParent(obj.layout25);
     obj.imgPreviewExtra_1:setName("imgPreviewExtra_1");
     obj.imgPreviewExtra_1:setAlign("client");
     obj.imgPreviewExtra_1:setStyle("proportional");
     obj.imgPreviewExtra_1:setSRC("");
 
     obj.labPreviewErrExtra_1 = GUI.fromHandle(_obj_newObject("label"));
-    obj.labPreviewErrExtra_1:setParent(obj.layout24);
+    obj.labPreviewErrExtra_1:setParent(obj.layout25);
     obj.labPreviewErrExtra_1:setName("labPreviewErrExtra_1");
     obj.labPreviewErrExtra_1:setAlign("client");
     obj.labPreviewErrExtra_1:setText("!");
@@ -2082,15 +2349,15 @@ local function constructNew_frmVNScene()
     obj.labPreviewErrExtra_1:setVisible(false);
     obj.labPreviewErrExtra_1:setHint("A imagem não carregou. Confira a URL.");
 
-    obj.layout25 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout25:setParent(obj.configContent);
-    obj.layout25:setAlign("top");
-    obj.layout25:setHeight(36);
-    obj.layout25:setMargins({bottom=6});
-    obj.layout25:setName("layout25");
+    obj.layout26 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout26:setParent(obj.configContent);
+    obj.layout26:setAlign("top");
+    obj.layout26:setHeight(36);
+    obj.layout26:setMargins({bottom=6});
+    obj.layout26:setName("layout26");
 
     obj.edit22 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit22:setParent(obj.layout25);
+    obj.edit22:setParent(obj.layout26);
     obj.edit22:setAlign("left");
     obj.edit22:setWidth(100);
     obj.edit22:setField("extra_2_npc");
@@ -2099,7 +2366,7 @@ local function constructNew_frmVNScene()
     obj.edit22:setName("edit22");
 
     obj.colorComboBox11 = GUI.fromHandle(_obj_newObject("colorComboBox"));
-    obj.colorComboBox11:setParent(obj.layout25);
+    obj.colorComboBox11:setParent(obj.layout26);
     obj.colorComboBox11:setAlign("left");
     obj.colorComboBox11:setWidth(52);
     obj.colorComboBox11:setField("extra_2_color");
@@ -2109,29 +2376,29 @@ local function constructNew_frmVNScene()
     obj.colorComboBox11:setName("colorComboBox11");
 
     obj.edit23 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit23:setParent(obj.layout25);
+    obj.edit23:setParent(obj.layout26);
     obj.edit23:setAlign("client");
     obj.edit23:setField("extra_2_url");
     obj.edit23:setHint("URL");
     obj.edit23:setMargins({right=4});
     obj.edit23:setName("edit23");
 
-    obj.layout26 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout26:setParent(obj.layout25);
-    obj.layout26:setAlign("right");
-    obj.layout26:setWidth(36);
-    obj.layout26:setHeight(36);
-    obj.layout26:setName("layout26");
+    obj.layout27 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout27:setParent(obj.layout26);
+    obj.layout27:setAlign("right");
+    obj.layout27:setWidth(36);
+    obj.layout27:setHeight(36);
+    obj.layout27:setName("layout27");
 
     obj.imgPreviewExtra_2 = GUI.fromHandle(_obj_newObject("image"));
-    obj.imgPreviewExtra_2:setParent(obj.layout26);
+    obj.imgPreviewExtra_2:setParent(obj.layout27);
     obj.imgPreviewExtra_2:setName("imgPreviewExtra_2");
     obj.imgPreviewExtra_2:setAlign("client");
     obj.imgPreviewExtra_2:setStyle("proportional");
     obj.imgPreviewExtra_2:setSRC("");
 
     obj.labPreviewErrExtra_2 = GUI.fromHandle(_obj_newObject("label"));
-    obj.labPreviewErrExtra_2:setParent(obj.layout26);
+    obj.labPreviewErrExtra_2:setParent(obj.layout27);
     obj.labPreviewErrExtra_2:setName("labPreviewErrExtra_2");
     obj.labPreviewErrExtra_2:setAlign("client");
     obj.labPreviewErrExtra_2:setText("!");
@@ -2143,15 +2410,15 @@ local function constructNew_frmVNScene()
     obj.labPreviewErrExtra_2:setVisible(false);
     obj.labPreviewErrExtra_2:setHint("A imagem não carregou. Confira a URL.");
 
-    obj.layout27 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout27:setParent(obj.configContent);
-    obj.layout27:setAlign("top");
-    obj.layout27:setHeight(36);
-    obj.layout27:setMargins({bottom=6});
-    obj.layout27:setName("layout27");
+    obj.layout28 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout28:setParent(obj.configContent);
+    obj.layout28:setAlign("top");
+    obj.layout28:setHeight(36);
+    obj.layout28:setMargins({bottom=6});
+    obj.layout28:setName("layout28");
 
     obj.edit24 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit24:setParent(obj.layout27);
+    obj.edit24:setParent(obj.layout28);
     obj.edit24:setAlign("left");
     obj.edit24:setWidth(100);
     obj.edit24:setField("extra_3_npc");
@@ -2160,7 +2427,7 @@ local function constructNew_frmVNScene()
     obj.edit24:setName("edit24");
 
     obj.colorComboBox12 = GUI.fromHandle(_obj_newObject("colorComboBox"));
-    obj.colorComboBox12:setParent(obj.layout27);
+    obj.colorComboBox12:setParent(obj.layout28);
     obj.colorComboBox12:setAlign("left");
     obj.colorComboBox12:setWidth(52);
     obj.colorComboBox12:setField("extra_3_color");
@@ -2170,29 +2437,29 @@ local function constructNew_frmVNScene()
     obj.colorComboBox12:setName("colorComboBox12");
 
     obj.edit25 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit25:setParent(obj.layout27);
+    obj.edit25:setParent(obj.layout28);
     obj.edit25:setAlign("client");
     obj.edit25:setField("extra_3_url");
     obj.edit25:setHint("URL");
     obj.edit25:setMargins({right=4});
     obj.edit25:setName("edit25");
 
-    obj.layout28 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout28:setParent(obj.layout27);
-    obj.layout28:setAlign("right");
-    obj.layout28:setWidth(36);
-    obj.layout28:setHeight(36);
-    obj.layout28:setName("layout28");
+    obj.layout29 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout29:setParent(obj.layout28);
+    obj.layout29:setAlign("right");
+    obj.layout29:setWidth(36);
+    obj.layout29:setHeight(36);
+    obj.layout29:setName("layout29");
 
     obj.imgPreviewExtra_3 = GUI.fromHandle(_obj_newObject("image"));
-    obj.imgPreviewExtra_3:setParent(obj.layout28);
+    obj.imgPreviewExtra_3:setParent(obj.layout29);
     obj.imgPreviewExtra_3:setName("imgPreviewExtra_3");
     obj.imgPreviewExtra_3:setAlign("client");
     obj.imgPreviewExtra_3:setStyle("proportional");
     obj.imgPreviewExtra_3:setSRC("");
 
     obj.labPreviewErrExtra_3 = GUI.fromHandle(_obj_newObject("label"));
-    obj.labPreviewErrExtra_3:setParent(obj.layout28);
+    obj.labPreviewErrExtra_3:setParent(obj.layout29);
     obj.labPreviewErrExtra_3:setName("labPreviewErrExtra_3");
     obj.labPreviewErrExtra_3:setAlign("client");
     obj.labPreviewErrExtra_3:setText("!");
@@ -2204,15 +2471,15 @@ local function constructNew_frmVNScene()
     obj.labPreviewErrExtra_3:setVisible(false);
     obj.labPreviewErrExtra_3:setHint("A imagem não carregou. Confira a URL.");
 
-    obj.layout29 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout29:setParent(obj.configContent);
-    obj.layout29:setAlign("top");
-    obj.layout29:setHeight(36);
-    obj.layout29:setMargins({bottom=6});
-    obj.layout29:setName("layout29");
+    obj.layout30 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout30:setParent(obj.configContent);
+    obj.layout30:setAlign("top");
+    obj.layout30:setHeight(36);
+    obj.layout30:setMargins({bottom=6});
+    obj.layout30:setName("layout30");
 
     obj.edit26 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit26:setParent(obj.layout29);
+    obj.edit26:setParent(obj.layout30);
     obj.edit26:setAlign("left");
     obj.edit26:setWidth(100);
     obj.edit26:setField("extra_4_npc");
@@ -2221,7 +2488,7 @@ local function constructNew_frmVNScene()
     obj.edit26:setName("edit26");
 
     obj.colorComboBox13 = GUI.fromHandle(_obj_newObject("colorComboBox"));
-    obj.colorComboBox13:setParent(obj.layout29);
+    obj.colorComboBox13:setParent(obj.layout30);
     obj.colorComboBox13:setAlign("left");
     obj.colorComboBox13:setWidth(52);
     obj.colorComboBox13:setField("extra_4_color");
@@ -2231,29 +2498,29 @@ local function constructNew_frmVNScene()
     obj.colorComboBox13:setName("colorComboBox13");
 
     obj.edit27 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit27:setParent(obj.layout29);
+    obj.edit27:setParent(obj.layout30);
     obj.edit27:setAlign("client");
     obj.edit27:setField("extra_4_url");
     obj.edit27:setHint("URL");
     obj.edit27:setMargins({right=4});
     obj.edit27:setName("edit27");
 
-    obj.layout30 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout30:setParent(obj.layout29);
-    obj.layout30:setAlign("right");
-    obj.layout30:setWidth(36);
-    obj.layout30:setHeight(36);
-    obj.layout30:setName("layout30");
+    obj.layout31 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout31:setParent(obj.layout30);
+    obj.layout31:setAlign("right");
+    obj.layout31:setWidth(36);
+    obj.layout31:setHeight(36);
+    obj.layout31:setName("layout31");
 
     obj.imgPreviewExtra_4 = GUI.fromHandle(_obj_newObject("image"));
-    obj.imgPreviewExtra_4:setParent(obj.layout30);
+    obj.imgPreviewExtra_4:setParent(obj.layout31);
     obj.imgPreviewExtra_4:setName("imgPreviewExtra_4");
     obj.imgPreviewExtra_4:setAlign("client");
     obj.imgPreviewExtra_4:setStyle("proportional");
     obj.imgPreviewExtra_4:setSRC("");
 
     obj.labPreviewErrExtra_4 = GUI.fromHandle(_obj_newObject("label"));
-    obj.labPreviewErrExtra_4:setParent(obj.layout30);
+    obj.labPreviewErrExtra_4:setParent(obj.layout31);
     obj.labPreviewErrExtra_4:setName("labPreviewErrExtra_4");
     obj.labPreviewErrExtra_4:setAlign("client");
     obj.labPreviewErrExtra_4:setText("!");
@@ -2265,15 +2532,15 @@ local function constructNew_frmVNScene()
     obj.labPreviewErrExtra_4:setVisible(false);
     obj.labPreviewErrExtra_4:setHint("A imagem não carregou. Confira a URL.");
 
-    obj.layout31 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout31:setParent(obj.configContent);
-    obj.layout31:setAlign("top");
-    obj.layout31:setHeight(36);
-    obj.layout31:setMargins({bottom=6});
-    obj.layout31:setName("layout31");
+    obj.layout32 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout32:setParent(obj.configContent);
+    obj.layout32:setAlign("top");
+    obj.layout32:setHeight(36);
+    obj.layout32:setMargins({bottom=6});
+    obj.layout32:setName("layout32");
 
     obj.edit28 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit28:setParent(obj.layout31);
+    obj.edit28:setParent(obj.layout32);
     obj.edit28:setAlign("left");
     obj.edit28:setWidth(100);
     obj.edit28:setField("extra_5_npc");
@@ -2282,7 +2549,7 @@ local function constructNew_frmVNScene()
     obj.edit28:setName("edit28");
 
     obj.colorComboBox14 = GUI.fromHandle(_obj_newObject("colorComboBox"));
-    obj.colorComboBox14:setParent(obj.layout31);
+    obj.colorComboBox14:setParent(obj.layout32);
     obj.colorComboBox14:setAlign("left");
     obj.colorComboBox14:setWidth(52);
     obj.colorComboBox14:setField("extra_5_color");
@@ -2292,29 +2559,29 @@ local function constructNew_frmVNScene()
     obj.colorComboBox14:setName("colorComboBox14");
 
     obj.edit29 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit29:setParent(obj.layout31);
+    obj.edit29:setParent(obj.layout32);
     obj.edit29:setAlign("client");
     obj.edit29:setField("extra_5_url");
     obj.edit29:setHint("URL");
     obj.edit29:setMargins({right=4});
     obj.edit29:setName("edit29");
 
-    obj.layout32 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout32:setParent(obj.layout31);
-    obj.layout32:setAlign("right");
-    obj.layout32:setWidth(36);
-    obj.layout32:setHeight(36);
-    obj.layout32:setName("layout32");
+    obj.layout33 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout33:setParent(obj.layout32);
+    obj.layout33:setAlign("right");
+    obj.layout33:setWidth(36);
+    obj.layout33:setHeight(36);
+    obj.layout33:setName("layout33");
 
     obj.imgPreviewExtra_5 = GUI.fromHandle(_obj_newObject("image"));
-    obj.imgPreviewExtra_5:setParent(obj.layout32);
+    obj.imgPreviewExtra_5:setParent(obj.layout33);
     obj.imgPreviewExtra_5:setName("imgPreviewExtra_5");
     obj.imgPreviewExtra_5:setAlign("client");
     obj.imgPreviewExtra_5:setStyle("proportional");
     obj.imgPreviewExtra_5:setSRC("");
 
     obj.labPreviewErrExtra_5 = GUI.fromHandle(_obj_newObject("label"));
-    obj.labPreviewErrExtra_5:setParent(obj.layout32);
+    obj.labPreviewErrExtra_5:setParent(obj.layout33);
     obj.labPreviewErrExtra_5:setName("labPreviewErrExtra_5");
     obj.labPreviewErrExtra_5:setAlign("client");
     obj.labPreviewErrExtra_5:setText("!");
@@ -2326,15 +2593,15 @@ local function constructNew_frmVNScene()
     obj.labPreviewErrExtra_5:setVisible(false);
     obj.labPreviewErrExtra_5:setHint("A imagem não carregou. Confira a URL.");
 
-    obj.layout33 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout33:setParent(obj.configContent);
-    obj.layout33:setAlign("top");
-    obj.layout33:setHeight(36);
-    obj.layout33:setMargins({bottom=16});
-    obj.layout33:setName("layout33");
+    obj.layout34 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout34:setParent(obj.configContent);
+    obj.layout34:setAlign("top");
+    obj.layout34:setHeight(36);
+    obj.layout34:setMargins({bottom=16});
+    obj.layout34:setName("layout34");
 
     obj.edit30 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit30:setParent(obj.layout33);
+    obj.edit30:setParent(obj.layout34);
     obj.edit30:setAlign("left");
     obj.edit30:setWidth(100);
     obj.edit30:setField("extra_6_npc");
@@ -2343,7 +2610,7 @@ local function constructNew_frmVNScene()
     obj.edit30:setName("edit30");
 
     obj.colorComboBox15 = GUI.fromHandle(_obj_newObject("colorComboBox"));
-    obj.colorComboBox15:setParent(obj.layout33);
+    obj.colorComboBox15:setParent(obj.layout34);
     obj.colorComboBox15:setAlign("left");
     obj.colorComboBox15:setWidth(52);
     obj.colorComboBox15:setField("extra_6_color");
@@ -2353,29 +2620,29 @@ local function constructNew_frmVNScene()
     obj.colorComboBox15:setName("colorComboBox15");
 
     obj.edit31 = GUI.fromHandle(_obj_newObject("edit"));
-    obj.edit31:setParent(obj.layout33);
+    obj.edit31:setParent(obj.layout34);
     obj.edit31:setAlign("client");
     obj.edit31:setField("extra_6_url");
     obj.edit31:setHint("URL");
     obj.edit31:setMargins({right=4});
     obj.edit31:setName("edit31");
 
-    obj.layout34 = GUI.fromHandle(_obj_newObject("layout"));
-    obj.layout34:setParent(obj.layout33);
-    obj.layout34:setAlign("right");
-    obj.layout34:setWidth(36);
-    obj.layout34:setHeight(36);
-    obj.layout34:setName("layout34");
+    obj.layout35 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout35:setParent(obj.layout34);
+    obj.layout35:setAlign("right");
+    obj.layout35:setWidth(36);
+    obj.layout35:setHeight(36);
+    obj.layout35:setName("layout35");
 
     obj.imgPreviewExtra_6 = GUI.fromHandle(_obj_newObject("image"));
-    obj.imgPreviewExtra_6:setParent(obj.layout34);
+    obj.imgPreviewExtra_6:setParent(obj.layout35);
     obj.imgPreviewExtra_6:setName("imgPreviewExtra_6");
     obj.imgPreviewExtra_6:setAlign("client");
     obj.imgPreviewExtra_6:setStyle("proportional");
     obj.imgPreviewExtra_6:setSRC("");
 
     obj.labPreviewErrExtra_6 = GUI.fromHandle(_obj_newObject("label"));
-    obj.labPreviewErrExtra_6:setParent(obj.layout34);
+    obj.labPreviewErrExtra_6:setParent(obj.layout35);
     obj.labPreviewErrExtra_6:setName("labPreviewErrExtra_6");
     obj.labPreviewErrExtra_6:setAlign("client");
     obj.labPreviewErrExtra_6:setText("!");
@@ -2386,6 +2653,338 @@ local function constructNew_frmVNScene()
     obj.labPreviewErrExtra_6:setVertTextAlign("center");
     obj.labPreviewErrExtra_6:setVisible(false);
     obj.labPreviewErrExtra_6:setHint("A imagem não carregou. Confira a URL.");
+
+    obj.label24 = GUI.fromHandle(_obj_newObject("label"));
+    obj.label24:setParent(obj.configContent);
+    obj.label24:setText("Cenas Salvas");
+    obj.label24:setAlign("top");
+    obj.label24:setHeight(20);
+    lfm_setPropAsString(obj.label24, "fontStyle", "bold");
+    obj.label24:setFontSize(13);
+    obj.label24:setName("label24");
+
+    obj.label25 = GUI.fromHandle(_obj_newObject("label"));
+    obj.label25:setParent(obj.configContent);
+    obj.label25:setText("Guarde a configuração atual (fundo, slots e extras) com um nome e volte a ela depois.");
+    obj.label25:setAlign("top");
+    obj.label25:setHeight(18);
+    obj.label25:setFontSize(11);
+    obj.label25:setFontColor("Gray");
+    obj.label25:setMargins({bottom=8});
+    obj.label25:setName("label25");
+
+    obj.layout36 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout36:setParent(obj.configContent);
+    obj.layout36:setAlign("top");
+    obj.layout36:setHeight(28);
+    obj.layout36:setMargins({bottom=4});
+    obj.layout36:setName("layout36");
+
+    obj.edit32 = GUI.fromHandle(_obj_newObject("edit"));
+    obj.edit32:setParent(obj.layout36);
+    obj.edit32:setAlign("client");
+    obj.edit32:setField("scene_1_name");
+    obj.edit32:setHint("Nome da cena 1");
+    obj.edit32:setMargins({right=4});
+    obj.edit32:setName("edit32");
+
+    obj.button17 = GUI.fromHandle(_obj_newObject("button"));
+    obj.button17:setParent(obj.layout36);
+    obj.button17:setAlign("right");
+    obj.button17:setWidth(60);
+    obj.button17:setText("Apagar");
+    obj.button17:setFontSize(10);
+    obj.button17:setMargins({left=4});
+    obj.button17:setHint("Apaga esta cena salva");
+    obj.button17:setName("button17");
+
+    obj.button18 = GUI.fromHandle(_obj_newObject("button"));
+    obj.button18:setParent(obj.layout36);
+    obj.button18:setAlign("right");
+    obj.button18:setWidth(64);
+    obj.button18:setText("Carregar");
+    obj.button18:setFontSize(10);
+    obj.button18:setMargins({left=4});
+    obj.button18:setHint("Substitui a configuração atual por esta cena");
+    obj.button18:setName("button18");
+
+    obj.button19 = GUI.fromHandle(_obj_newObject("button"));
+    obj.button19:setParent(obj.layout36);
+    obj.button19:setAlign("right");
+    obj.button19:setWidth(56);
+    obj.button19:setText("Salvar");
+    obj.button19:setFontSize(10);
+    obj.button19:setMargins({left=4});
+    obj.button19:setHint("Guarda a configuração atual nesta cena");
+    obj.button19:setName("button19");
+
+    obj.layout37 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout37:setParent(obj.configContent);
+    obj.layout37:setAlign("top");
+    obj.layout37:setHeight(28);
+    obj.layout37:setMargins({bottom=4});
+    obj.layout37:setName("layout37");
+
+    obj.edit33 = GUI.fromHandle(_obj_newObject("edit"));
+    obj.edit33:setParent(obj.layout37);
+    obj.edit33:setAlign("client");
+    obj.edit33:setField("scene_2_name");
+    obj.edit33:setHint("Nome da cena 2");
+    obj.edit33:setMargins({right=4});
+    obj.edit33:setName("edit33");
+
+    obj.button20 = GUI.fromHandle(_obj_newObject("button"));
+    obj.button20:setParent(obj.layout37);
+    obj.button20:setAlign("right");
+    obj.button20:setWidth(60);
+    obj.button20:setText("Apagar");
+    obj.button20:setFontSize(10);
+    obj.button20:setMargins({left=4});
+    obj.button20:setHint("Apaga esta cena salva");
+    obj.button20:setName("button20");
+
+    obj.button21 = GUI.fromHandle(_obj_newObject("button"));
+    obj.button21:setParent(obj.layout37);
+    obj.button21:setAlign("right");
+    obj.button21:setWidth(64);
+    obj.button21:setText("Carregar");
+    obj.button21:setFontSize(10);
+    obj.button21:setMargins({left=4});
+    obj.button21:setHint("Substitui a configuração atual por esta cena");
+    obj.button21:setName("button21");
+
+    obj.button22 = GUI.fromHandle(_obj_newObject("button"));
+    obj.button22:setParent(obj.layout37);
+    obj.button22:setAlign("right");
+    obj.button22:setWidth(56);
+    obj.button22:setText("Salvar");
+    obj.button22:setFontSize(10);
+    obj.button22:setMargins({left=4});
+    obj.button22:setHint("Guarda a configuração atual nesta cena");
+    obj.button22:setName("button22");
+
+    obj.layout38 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout38:setParent(obj.configContent);
+    obj.layout38:setAlign("top");
+    obj.layout38:setHeight(28);
+    obj.layout38:setMargins({bottom=4});
+    obj.layout38:setName("layout38");
+
+    obj.edit34 = GUI.fromHandle(_obj_newObject("edit"));
+    obj.edit34:setParent(obj.layout38);
+    obj.edit34:setAlign("client");
+    obj.edit34:setField("scene_3_name");
+    obj.edit34:setHint("Nome da cena 3");
+    obj.edit34:setMargins({right=4});
+    obj.edit34:setName("edit34");
+
+    obj.button23 = GUI.fromHandle(_obj_newObject("button"));
+    obj.button23:setParent(obj.layout38);
+    obj.button23:setAlign("right");
+    obj.button23:setWidth(60);
+    obj.button23:setText("Apagar");
+    obj.button23:setFontSize(10);
+    obj.button23:setMargins({left=4});
+    obj.button23:setHint("Apaga esta cena salva");
+    obj.button23:setName("button23");
+
+    obj.button24 = GUI.fromHandle(_obj_newObject("button"));
+    obj.button24:setParent(obj.layout38);
+    obj.button24:setAlign("right");
+    obj.button24:setWidth(64);
+    obj.button24:setText("Carregar");
+    obj.button24:setFontSize(10);
+    obj.button24:setMargins({left=4});
+    obj.button24:setHint("Substitui a configuração atual por esta cena");
+    obj.button24:setName("button24");
+
+    obj.button25 = GUI.fromHandle(_obj_newObject("button"));
+    obj.button25:setParent(obj.layout38);
+    obj.button25:setAlign("right");
+    obj.button25:setWidth(56);
+    obj.button25:setText("Salvar");
+    obj.button25:setFontSize(10);
+    obj.button25:setMargins({left=4});
+    obj.button25:setHint("Guarda a configuração atual nesta cena");
+    obj.button25:setName("button25");
+
+    obj.layout39 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout39:setParent(obj.configContent);
+    obj.layout39:setAlign("top");
+    obj.layout39:setHeight(28);
+    obj.layout39:setMargins({bottom=4});
+    obj.layout39:setName("layout39");
+
+    obj.edit35 = GUI.fromHandle(_obj_newObject("edit"));
+    obj.edit35:setParent(obj.layout39);
+    obj.edit35:setAlign("client");
+    obj.edit35:setField("scene_4_name");
+    obj.edit35:setHint("Nome da cena 4");
+    obj.edit35:setMargins({right=4});
+    obj.edit35:setName("edit35");
+
+    obj.button26 = GUI.fromHandle(_obj_newObject("button"));
+    obj.button26:setParent(obj.layout39);
+    obj.button26:setAlign("right");
+    obj.button26:setWidth(60);
+    obj.button26:setText("Apagar");
+    obj.button26:setFontSize(10);
+    obj.button26:setMargins({left=4});
+    obj.button26:setHint("Apaga esta cena salva");
+    obj.button26:setName("button26");
+
+    obj.button27 = GUI.fromHandle(_obj_newObject("button"));
+    obj.button27:setParent(obj.layout39);
+    obj.button27:setAlign("right");
+    obj.button27:setWidth(64);
+    obj.button27:setText("Carregar");
+    obj.button27:setFontSize(10);
+    obj.button27:setMargins({left=4});
+    obj.button27:setHint("Substitui a configuração atual por esta cena");
+    obj.button27:setName("button27");
+
+    obj.button28 = GUI.fromHandle(_obj_newObject("button"));
+    obj.button28:setParent(obj.layout39);
+    obj.button28:setAlign("right");
+    obj.button28:setWidth(56);
+    obj.button28:setText("Salvar");
+    obj.button28:setFontSize(10);
+    obj.button28:setMargins({left=4});
+    obj.button28:setHint("Guarda a configuração atual nesta cena");
+    obj.button28:setName("button28");
+
+    obj.layout40 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout40:setParent(obj.configContent);
+    obj.layout40:setAlign("top");
+    obj.layout40:setHeight(28);
+    obj.layout40:setMargins({bottom=4});
+    obj.layout40:setName("layout40");
+
+    obj.edit36 = GUI.fromHandle(_obj_newObject("edit"));
+    obj.edit36:setParent(obj.layout40);
+    obj.edit36:setAlign("client");
+    obj.edit36:setField("scene_5_name");
+    obj.edit36:setHint("Nome da cena 5");
+    obj.edit36:setMargins({right=4});
+    obj.edit36:setName("edit36");
+
+    obj.button29 = GUI.fromHandle(_obj_newObject("button"));
+    obj.button29:setParent(obj.layout40);
+    obj.button29:setAlign("right");
+    obj.button29:setWidth(60);
+    obj.button29:setText("Apagar");
+    obj.button29:setFontSize(10);
+    obj.button29:setMargins({left=4});
+    obj.button29:setHint("Apaga esta cena salva");
+    obj.button29:setName("button29");
+
+    obj.button30 = GUI.fromHandle(_obj_newObject("button"));
+    obj.button30:setParent(obj.layout40);
+    obj.button30:setAlign("right");
+    obj.button30:setWidth(64);
+    obj.button30:setText("Carregar");
+    obj.button30:setFontSize(10);
+    obj.button30:setMargins({left=4});
+    obj.button30:setHint("Substitui a configuração atual por esta cena");
+    obj.button30:setName("button30");
+
+    obj.button31 = GUI.fromHandle(_obj_newObject("button"));
+    obj.button31:setParent(obj.layout40);
+    obj.button31:setAlign("right");
+    obj.button31:setWidth(56);
+    obj.button31:setText("Salvar");
+    obj.button31:setFontSize(10);
+    obj.button31:setMargins({left=4});
+    obj.button31:setHint("Guarda a configuração atual nesta cena");
+    obj.button31:setName("button31");
+
+    obj.layout41 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout41:setParent(obj.configContent);
+    obj.layout41:setAlign("top");
+    obj.layout41:setHeight(28);
+    obj.layout41:setMargins({bottom=4});
+    obj.layout41:setName("layout41");
+
+    obj.edit37 = GUI.fromHandle(_obj_newObject("edit"));
+    obj.edit37:setParent(obj.layout41);
+    obj.edit37:setAlign("client");
+    obj.edit37:setField("scene_6_name");
+    obj.edit37:setHint("Nome da cena 6");
+    obj.edit37:setMargins({right=4});
+    obj.edit37:setName("edit37");
+
+    obj.button32 = GUI.fromHandle(_obj_newObject("button"));
+    obj.button32:setParent(obj.layout41);
+    obj.button32:setAlign("right");
+    obj.button32:setWidth(60);
+    obj.button32:setText("Apagar");
+    obj.button32:setFontSize(10);
+    obj.button32:setMargins({left=4});
+    obj.button32:setHint("Apaga esta cena salva");
+    obj.button32:setName("button32");
+
+    obj.button33 = GUI.fromHandle(_obj_newObject("button"));
+    obj.button33:setParent(obj.layout41);
+    obj.button33:setAlign("right");
+    obj.button33:setWidth(64);
+    obj.button33:setText("Carregar");
+    obj.button33:setFontSize(10);
+    obj.button33:setMargins({left=4});
+    obj.button33:setHint("Substitui a configuração atual por esta cena");
+    obj.button33:setName("button33");
+
+    obj.button34 = GUI.fromHandle(_obj_newObject("button"));
+    obj.button34:setParent(obj.layout41);
+    obj.button34:setAlign("right");
+    obj.button34:setWidth(56);
+    obj.button34:setText("Salvar");
+    obj.button34:setFontSize(10);
+    obj.button34:setMargins({left=4});
+    obj.button34:setHint("Guarda a configuração atual nesta cena");
+    obj.button34:setName("button34");
+
+    obj.label26 = GUI.fromHandle(_obj_newObject("label"));
+    obj.label26:setParent(obj.configContent);
+    obj.label26:setText("Exportar e Importar");
+    obj.label26:setAlign("top");
+    obj.label26:setHeight(20);
+    lfm_setPropAsString(obj.label26, "fontStyle", "bold");
+    obj.label26:setFontSize(13);
+    obj.label26:setMargins({top=12});
+    obj.label26:setName("label26");
+
+    obj.label27 = GUI.fromHandle(_obj_newObject("label"));
+    obj.label27:setParent(obj.configContent);
+    obj.label27:setText("Copia a configuração atual como texto, ou aplica um texto copiado de outra ficha.");
+    obj.label27:setAlign("top");
+    obj.label27:setHeight(18);
+    obj.label27:setFontSize(11);
+    obj.label27:setFontColor("Gray");
+    obj.label27:setMargins({bottom=8});
+    obj.label27:setName("label27");
+
+    obj.layout42 = GUI.fromHandle(_obj_newObject("layout"));
+    obj.layout42:setParent(obj.configContent);
+    obj.layout42:setAlign("top");
+    obj.layout42:setHeight(28);
+    obj.layout42:setName("layout42");
+
+    obj.button35 = GUI.fromHandle(_obj_newObject("button"));
+    obj.button35:setParent(obj.layout42);
+    obj.button35:setAlign("left");
+    obj.button35:setWidth(180);
+    obj.button35:setText("Exportar (copiar)");
+    obj.button35:setMargins({right=8});
+    obj.button35:setHint("Copia a configuração atual para a área de transferência");
+    obj.button35:setName("button35");
+
+    obj.button36 = GUI.fromHandle(_obj_newObject("button"));
+    obj.button36:setParent(obj.layout42);
+    obj.button36:setAlign("left");
+    obj.button36:setWidth(180);
+    obj.button36:setText("Importar (colar)");
+    obj.button36:setHint("Aplica a configuração que está na área de transferência");
+    obj.button36:setName("button36");
 
     obj._e_event0 = obj:addEventListener("onNodeReady",
         function ()
@@ -2412,352 +3011,484 @@ local function constructNew_frmVNScene()
             checkPreviews()
         end);
 
-    obj._e_event5 = obj.checkBox1:addEventListener("onChange",
+    obj._e_event5 = obj.sceneContent:addEventListener("onResize",
         function ()
             updateConfigTab()
         end);
 
-    obj._e_event6 = obj.frmStageContainer:addEventListener("onResize",
+    obj._e_event6 = obj.checkBox1:addEventListener("onChange",
+        function ()
+            updateConfigTab()
+        end);
+
+    obj._e_event7 = obj.checkBox2:addEventListener("onChange",
+        function ()
+            updateConfigTab()
+        end);
+
+    obj._e_event8 = obj.frmStageContainer:addEventListener("onResize",
         function ()
             updateStageScale()
         end);
 
-    obj._e_event7 = obj.btnDialogExpand:addEventListener("onClick",
+    obj._e_event9 = obj.btnDialogExpand:addEventListener("onClick",
         function (event)
             toggleDialogExpanded()
         end);
 
-    obj._e_event8 = obj.button1:addEventListener("onClick",
+    obj._e_event10 = obj.button1:addEventListener("onClick",
         function (event)
             confirmClearConfig()
         end);
 
-    obj._e_event9 = obj.edit1:addEventListener("onChange",
+    obj._e_event11 = obj.edit1:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event10 = obj.slotConfigs:addEventListener("onResize",
+    obj._e_event12 = obj.slotConfigs:addEventListener("onResize",
         function ()
             updateSlotLayout()
         end);
 
-    obj._e_event11 = obj.button2:addEventListener("onClick",
+    obj._e_event13 = obj.button2:addEventListener("onClick",
         function (event)
             confirmClearSlot('left')
         end);
 
-    obj._e_event12 = obj.button3:addEventListener("onClick",
+    obj._e_event14 = obj.button3:addEventListener("onClick",
         function (event)
             rotateSlot('left')
         end);
 
-    obj._e_event13 = obj.checkBox3:addEventListener("onChange",
+    obj._e_event15 = obj.checkBox5:addEventListener("onChange",
         function ()
             loadConfig()
         end);
 
-    obj._e_event14 = obj.edit2:addEventListener("onChange",
+    obj._e_event16 = obj.edit2:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event15 = obj.colorComboBox1:addEventListener("onChange",
+    obj._e_event17 = obj.colorComboBox1:addEventListener("onChange",
         function ()
             loadConfig()
         end);
 
-    obj._e_event16 = obj.edit3:addEventListener("onChange",
+    obj._e_event18 = obj.edit3:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event17 = obj.button4:addEventListener("onClick",
+    obj._e_event19 = obj.button4:addEventListener("onClick",
         function (event)
             setFocus('left', 1)
         end);
 
-    obj._e_event18 = obj.edit4:addEventListener("onChange",
+    obj._e_event20 = obj.edit4:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event19 = obj.colorComboBox2:addEventListener("onChange",
+    obj._e_event21 = obj.colorComboBox2:addEventListener("onChange",
         function ()
             loadConfig()
         end);
 
-    obj._e_event20 = obj.edit5:addEventListener("onChange",
+    obj._e_event22 = obj.edit5:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event21 = obj.button5:addEventListener("onClick",
+    obj._e_event23 = obj.button5:addEventListener("onClick",
         function (event)
             setFocus('left', 2)
         end);
 
-    obj._e_event22 = obj.edit6:addEventListener("onChange",
+    obj._e_event24 = obj.edit6:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event23 = obj.colorComboBox3:addEventListener("onChange",
+    obj._e_event25 = obj.colorComboBox3:addEventListener("onChange",
         function ()
             loadConfig()
         end);
 
-    obj._e_event24 = obj.edit7:addEventListener("onChange",
+    obj._e_event26 = obj.edit7:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event25 = obj.button6:addEventListener("onClick",
+    obj._e_event27 = obj.button6:addEventListener("onClick",
         function (event)
             setFocus('left', 3)
         end);
 
-    obj._e_event26 = obj.button7:addEventListener("onClick",
+    obj._e_event28 = obj.button7:addEventListener("onClick",
         function (event)
             confirmClearSlot('center')
         end);
 
-    obj._e_event27 = obj.button8:addEventListener("onClick",
+    obj._e_event29 = obj.button8:addEventListener("onClick",
         function (event)
             rotateSlot('center')
         end);
 
-    obj._e_event28 = obj.checkBox4:addEventListener("onChange",
+    obj._e_event30 = obj.checkBox6:addEventListener("onChange",
         function ()
             loadConfig()
         end);
 
-    obj._e_event29 = obj.edit8:addEventListener("onChange",
+    obj._e_event31 = obj.edit8:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event30 = obj.colorComboBox4:addEventListener("onChange",
+    obj._e_event32 = obj.colorComboBox4:addEventListener("onChange",
         function ()
             loadConfig()
         end);
 
-    obj._e_event31 = obj.edit9:addEventListener("onChange",
+    obj._e_event33 = obj.edit9:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event32 = obj.button9:addEventListener("onClick",
+    obj._e_event34 = obj.button9:addEventListener("onClick",
         function (event)
             setFocus('center', 1)
         end);
 
-    obj._e_event33 = obj.edit10:addEventListener("onChange",
+    obj._e_event35 = obj.edit10:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event34 = obj.colorComboBox5:addEventListener("onChange",
+    obj._e_event36 = obj.colorComboBox5:addEventListener("onChange",
         function ()
             loadConfig()
         end);
 
-    obj._e_event35 = obj.edit11:addEventListener("onChange",
+    obj._e_event37 = obj.edit11:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event36 = obj.button10:addEventListener("onClick",
+    obj._e_event38 = obj.button10:addEventListener("onClick",
         function (event)
             setFocus('center', 2)
         end);
 
-    obj._e_event37 = obj.edit12:addEventListener("onChange",
+    obj._e_event39 = obj.edit12:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event38 = obj.colorComboBox6:addEventListener("onChange",
+    obj._e_event40 = obj.colorComboBox6:addEventListener("onChange",
         function ()
             loadConfig()
         end);
 
-    obj._e_event39 = obj.edit13:addEventListener("onChange",
+    obj._e_event41 = obj.edit13:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event40 = obj.button11:addEventListener("onClick",
+    obj._e_event42 = obj.button11:addEventListener("onClick",
         function (event)
             setFocus('center', 3)
         end);
 
-    obj._e_event41 = obj.button12:addEventListener("onClick",
+    obj._e_event43 = obj.button12:addEventListener("onClick",
         function (event)
             confirmClearSlot('right')
         end);
 
-    obj._e_event42 = obj.button13:addEventListener("onClick",
+    obj._e_event44 = obj.button13:addEventListener("onClick",
         function (event)
             rotateSlot('right')
         end);
 
-    obj._e_event43 = obj.checkBox5:addEventListener("onChange",
+    obj._e_event45 = obj.checkBox7:addEventListener("onChange",
         function ()
             loadConfig()
         end);
 
-    obj._e_event44 = obj.edit14:addEventListener("onChange",
+    obj._e_event46 = obj.edit14:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event45 = obj.colorComboBox7:addEventListener("onChange",
+    obj._e_event47 = obj.colorComboBox7:addEventListener("onChange",
         function ()
             loadConfig()
         end);
 
-    obj._e_event46 = obj.edit15:addEventListener("onChange",
+    obj._e_event48 = obj.edit15:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event47 = obj.button14:addEventListener("onClick",
+    obj._e_event49 = obj.button14:addEventListener("onClick",
         function (event)
             setFocus('right', 1)
         end);
 
-    obj._e_event48 = obj.edit16:addEventListener("onChange",
+    obj._e_event50 = obj.edit16:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event49 = obj.colorComboBox8:addEventListener("onChange",
+    obj._e_event51 = obj.colorComboBox8:addEventListener("onChange",
         function ()
             loadConfig()
         end);
 
-    obj._e_event50 = obj.edit17:addEventListener("onChange",
+    obj._e_event52 = obj.edit17:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event51 = obj.button15:addEventListener("onClick",
+    obj._e_event53 = obj.button15:addEventListener("onClick",
         function (event)
             setFocus('right', 2)
         end);
 
-    obj._e_event52 = obj.edit18:addEventListener("onChange",
+    obj._e_event54 = obj.edit18:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event53 = obj.colorComboBox9:addEventListener("onChange",
+    obj._e_event55 = obj.colorComboBox9:addEventListener("onChange",
         function ()
             loadConfig()
         end);
 
-    obj._e_event54 = obj.edit19:addEventListener("onChange",
+    obj._e_event56 = obj.edit19:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event55 = obj.button16:addEventListener("onClick",
+    obj._e_event57 = obj.button16:addEventListener("onClick",
         function (event)
             setFocus('right', 3)
         end);
 
-    obj._e_event56 = obj.edit20:addEventListener("onChange",
+    obj._e_event58 = obj.edit20:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event57 = obj.colorComboBox10:addEventListener("onChange",
+    obj._e_event59 = obj.colorComboBox10:addEventListener("onChange",
         function ()
             loadConfig()
         end);
 
-    obj._e_event58 = obj.edit21:addEventListener("onChange",
+    obj._e_event60 = obj.edit21:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event59 = obj.edit22:addEventListener("onChange",
+    obj._e_event61 = obj.edit22:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event60 = obj.colorComboBox11:addEventListener("onChange",
+    obj._e_event62 = obj.colorComboBox11:addEventListener("onChange",
         function ()
             loadConfig()
         end);
 
-    obj._e_event61 = obj.edit23:addEventListener("onChange",
+    obj._e_event63 = obj.edit23:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event62 = obj.edit24:addEventListener("onChange",
+    obj._e_event64 = obj.edit24:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event63 = obj.colorComboBox12:addEventListener("onChange",
+    obj._e_event65 = obj.colorComboBox12:addEventListener("onChange",
         function ()
             loadConfig()
         end);
 
-    obj._e_event64 = obj.edit25:addEventListener("onChange",
+    obj._e_event66 = obj.edit25:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event65 = obj.edit26:addEventListener("onChange",
+    obj._e_event67 = obj.edit26:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event66 = obj.colorComboBox13:addEventListener("onChange",
+    obj._e_event68 = obj.colorComboBox13:addEventListener("onChange",
         function ()
             loadConfig()
         end);
 
-    obj._e_event67 = obj.edit27:addEventListener("onChange",
+    obj._e_event69 = obj.edit27:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event68 = obj.edit28:addEventListener("onChange",
+    obj._e_event70 = obj.edit28:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event69 = obj.colorComboBox14:addEventListener("onChange",
+    obj._e_event71 = obj.colorComboBox14:addEventListener("onChange",
         function ()
             loadConfig()
         end);
 
-    obj._e_event70 = obj.edit29:addEventListener("onChange",
+    obj._e_event72 = obj.edit29:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event71 = obj.edit30:addEventListener("onChange",
+    obj._e_event73 = obj.edit30:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
         end);
 
-    obj._e_event72 = obj.colorComboBox15:addEventListener("onChange",
+    obj._e_event74 = obj.colorComboBox15:addEventListener("onChange",
         function ()
             loadConfig()
         end);
 
-    obj._e_event73 = obj.edit31:addEventListener("onChange",
+    obj._e_event75 = obj.edit31:addEventListener("onChange",
         function ()
             scheduleLoadConfig()
+        end);
+
+    obj._e_event76 = obj.button17:addEventListener("onClick",
+        function (event)
+            confirmDeleteScene(1)
+        end);
+
+    obj._e_event77 = obj.button18:addEventListener("onClick",
+        function (event)
+            confirmLoadScene(1)
+        end);
+
+    obj._e_event78 = obj.button19:addEventListener("onClick",
+        function (event)
+            confirmSaveScene(1)
+        end);
+
+    obj._e_event79 = obj.button20:addEventListener("onClick",
+        function (event)
+            confirmDeleteScene(2)
+        end);
+
+    obj._e_event80 = obj.button21:addEventListener("onClick",
+        function (event)
+            confirmLoadScene(2)
+        end);
+
+    obj._e_event81 = obj.button22:addEventListener("onClick",
+        function (event)
+            confirmSaveScene(2)
+        end);
+
+    obj._e_event82 = obj.button23:addEventListener("onClick",
+        function (event)
+            confirmDeleteScene(3)
+        end);
+
+    obj._e_event83 = obj.button24:addEventListener("onClick",
+        function (event)
+            confirmLoadScene(3)
+        end);
+
+    obj._e_event84 = obj.button25:addEventListener("onClick",
+        function (event)
+            confirmSaveScene(3)
+        end);
+
+    obj._e_event85 = obj.button26:addEventListener("onClick",
+        function (event)
+            confirmDeleteScene(4)
+        end);
+
+    obj._e_event86 = obj.button27:addEventListener("onClick",
+        function (event)
+            confirmLoadScene(4)
+        end);
+
+    obj._e_event87 = obj.button28:addEventListener("onClick",
+        function (event)
+            confirmSaveScene(4)
+        end);
+
+    obj._e_event88 = obj.button29:addEventListener("onClick",
+        function (event)
+            confirmDeleteScene(5)
+        end);
+
+    obj._e_event89 = obj.button30:addEventListener("onClick",
+        function (event)
+            confirmLoadScene(5)
+        end);
+
+    obj._e_event90 = obj.button31:addEventListener("onClick",
+        function (event)
+            confirmSaveScene(5)
+        end);
+
+    obj._e_event91 = obj.button32:addEventListener("onClick",
+        function (event)
+            confirmDeleteScene(6)
+        end);
+
+    obj._e_event92 = obj.button33:addEventListener("onClick",
+        function (event)
+            confirmLoadScene(6)
+        end);
+
+    obj._e_event93 = obj.button34:addEventListener("onClick",
+        function (event)
+            confirmSaveScene(6)
+        end);
+
+    obj._e_event94 = obj.button35:addEventListener("onClick",
+        function (event)
+            exportConfig()
+        end);
+
+    obj._e_event95 = obj.button36:addEventListener("onClick",
+        function (event)
+            importConfig()
         end);
 
     function obj:_releaseEvents()
+        __o_rrpgObjs.removeEventListenerById(self._e_event95);
+        __o_rrpgObjs.removeEventListenerById(self._e_event94);
+        __o_rrpgObjs.removeEventListenerById(self._e_event93);
+        __o_rrpgObjs.removeEventListenerById(self._e_event92);
+        __o_rrpgObjs.removeEventListenerById(self._e_event91);
+        __o_rrpgObjs.removeEventListenerById(self._e_event90);
+        __o_rrpgObjs.removeEventListenerById(self._e_event89);
+        __o_rrpgObjs.removeEventListenerById(self._e_event88);
+        __o_rrpgObjs.removeEventListenerById(self._e_event87);
+        __o_rrpgObjs.removeEventListenerById(self._e_event86);
+        __o_rrpgObjs.removeEventListenerById(self._e_event85);
+        __o_rrpgObjs.removeEventListenerById(self._e_event84);
+        __o_rrpgObjs.removeEventListenerById(self._e_event83);
+        __o_rrpgObjs.removeEventListenerById(self._e_event82);
+        __o_rrpgObjs.removeEventListenerById(self._e_event81);
+        __o_rrpgObjs.removeEventListenerById(self._e_event80);
+        __o_rrpgObjs.removeEventListenerById(self._e_event79);
+        __o_rrpgObjs.removeEventListenerById(self._e_event78);
+        __o_rrpgObjs.removeEventListenerById(self._e_event77);
+        __o_rrpgObjs.removeEventListenerById(self._e_event76);
+        __o_rrpgObjs.removeEventListenerById(self._e_event75);
+        __o_rrpgObjs.removeEventListenerById(self._e_event74);
         __o_rrpgObjs.removeEventListenerById(self._e_event73);
         __o_rrpgObjs.removeEventListenerById(self._e_event72);
         __o_rrpgObjs.removeEventListenerById(self._e_event71);
@@ -2852,7 +3583,10 @@ local function constructNew_frmVNScene()
         if self.layout3 ~= nil then self.layout3:destroy(); self.layout3 = nil; end;
         if self.imgPreviewExtra_6 ~= nil then self.imgPreviewExtra_6:destroy(); self.imgPreviewExtra_6 = nil; end;
         if self.button11 ~= nil then self.button11:destroy(); self.button11 = nil; end;
+        if self.button25 ~= nil then self.button25:destroy(); self.button25 = nil; end;
+        if self.edit35 ~= nil then self.edit35:destroy(); self.edit35 = nil; end;
         if self.checkBox4 ~= nil then self.checkBox4:destroy(); self.checkBox4 = nil; end;
+        if self.button28 ~= nil then self.button28:destroy(); self.button28 = nil; end;
         if self.edit27 ~= nil then self.edit27:destroy(); self.edit27 = nil; end;
         if self.checkBox1 ~= nil then self.checkBox1:destroy(); self.checkBox1 = nil; end;
         if self.colorComboBox1 ~= nil then self.colorComboBox1:destroy(); self.colorComboBox1 = nil; end;
@@ -2861,6 +3595,7 @@ local function constructNew_frmVNScene()
         if self.edit14 ~= nil then self.edit14:destroy(); self.edit14 = nil; end;
         if self.rectExtra_5 ~= nil then self.rectExtra_5:destroy(); self.rectExtra_5 = nil; end;
         if self.edit9 ~= nil then self.edit9:destroy(); self.edit9 = nil; end;
+        if self.layout37 ~= nil then self.layout37:destroy(); self.layout37 = nil; end;
         if self.colorComboBox4 ~= nil then self.colorComboBox4:destroy(); self.colorComboBox4 = nil; end;
         if self.label15 ~= nil then self.label15:destroy(); self.label15 = nil; end;
         if self.labPreviewErrExtra_1 ~= nil then self.labPreviewErrExtra_1:destroy(); self.labPreviewErrExtra_1 = nil; end;
@@ -2875,6 +3610,7 @@ local function constructNew_frmVNScene()
         if self.labPreviewErr_left_2 ~= nil then self.labPreviewErr_left_2:destroy(); self.labPreviewErr_left_2 = nil; end;
         if self.imgExtra_6 ~= nil then self.imgExtra_6:destroy(); self.imgExtra_6 = nil; end;
         if self.layout20 ~= nil then self.layout20:destroy(); self.layout20 = nil; end;
+        if self.button34 ~= nil then self.button34:destroy(); self.button34 = nil; end;
         if self.tab1 ~= nil then self.tab1:destroy(); self.tab1 = nil; end;
         if self.imgPreview_left_2 ~= nil then self.imgPreview_left_2:destroy(); self.imgPreview_left_2 = nil; end;
         if self.layout18 ~= nil then self.layout18:destroy(); self.layout18 = nil; end;
@@ -2884,20 +3620,25 @@ local function constructNew_frmVNScene()
         if self.imgPreview_right_3 ~= nil then self.imgPreview_right_3:destroy(); self.imgPreview_right_3 = nil; end;
         if self.label9 ~= nil then self.label9:destroy(); self.label9 = nil; end;
         if self.layout15 ~= nil then self.layout15:destroy(); self.layout15 = nil; end;
+        if self.button18 ~= nil then self.button18:destroy(); self.button18 = nil; end;
         if self.button6 ~= nil then self.button6:destroy(); self.button6 = nil; end;
         if self.layout7 ~= nil then self.layout7:destroy(); self.layout7 = nil; end;
         if self.imgPreviewExtra_2 ~= nil then self.imgPreviewExtra_2:destroy(); self.imgPreviewExtra_2 = nil; end;
+        if self.button21 ~= nil then self.button21:destroy(); self.button21 = nil; end;
         if self.edit31 ~= nil then self.edit31:destroy(); self.edit31 = nil; end;
         if self.layout2 ~= nil then self.layout2:destroy(); self.layout2 = nil; end;
         if self.slotConfigs ~= nil then self.slotConfigs:destroy(); self.slotConfigs = nil; end;
+        if self.layout42 ~= nil then self.layout42:destroy(); self.layout42 = nil; end;
         if self.label7 ~= nil then self.label7:destroy(); self.label7 = nil; end;
         if self.button16 ~= nil then self.button16:destroy(); self.button16 = nil; end;
+        if self.button24 ~= nil then self.button24:destroy(); self.button24 = nil; end;
         if self.edit23 ~= nil then self.edit23:destroy(); self.edit23 = nil; end;
         if self.checkBox5 ~= nil then self.checkBox5:destroy(); self.checkBox5 = nil; end;
         if self.edit10 ~= nil then self.edit10:destroy(); self.edit10 = nil; end;
         if self.rectExtra_1 ~= nil then self.rectExtra_1:destroy(); self.rectExtra_1 = nil; end;
         if self.edit26 ~= nil then self.edit26:destroy(); self.edit26 = nil; end;
         if self.label11 ~= nil then self.label11:destroy(); self.label11 = nil; end;
+        if self.label25 ~= nil then self.label25:destroy(); self.label25 = nil; end;
         if self.edit15 ~= nil then self.edit15:destroy(); self.edit15 = nil; end;
         if self.rectExtra_6 ~= nil then self.rectExtra_6:destroy(); self.rectExtra_6 = nil; end;
         if self.edit8 ~= nil then self.edit8:destroy(); self.edit8 = nil; end;
@@ -2908,6 +3649,7 @@ local function constructNew_frmVNScene()
         if self.labPreviewErrExtra_2 ~= nil then self.labPreviewErrExtra_2:destroy(); self.labPreviewErrExtra_2 = nil; end;
         if self.rectDialog ~= nil then self.rectDialog:destroy(); self.rectDialog = nil; end;
         if self.imgSprite_right_1 ~= nil then self.imgSprite_right_1:destroy(); self.imgSprite_right_1 = nil; end;
+        if self.button30 ~= nil then self.button30:destroy(); self.button30 = nil; end;
         if self.imgExtra_2 ~= nil then self.imgExtra_2:destroy(); self.imgExtra_2 = nil; end;
         if self.layout24 ~= nil then self.layout24:destroy(); self.layout24 = nil; end;
         if self.colorComboBox12 ~= nil then self.colorComboBox12:destroy(); self.colorComboBox12 = nil; end;
@@ -2920,6 +3662,7 @@ local function constructNew_frmVNScene()
         if self.imgExtra_5 ~= nil then self.imgExtra_5:destroy(); self.imgExtra_5 = nil; end;
         if self.layout23 ~= nil then self.layout23:destroy(); self.layout23 = nil; end;
         if self.slotConfigLeft ~= nil then self.slotConfigLeft:destroy(); self.slotConfigLeft = nil; end;
+        if self.button35 ~= nil then self.button35:destroy(); self.button35 = nil; end;
         if self.imgPreview_left_1 ~= nil then self.imgPreview_left_1:destroy(); self.imgPreview_left_1 = nil; end;
         if self.layout19 ~= nil then self.layout19:destroy(); self.layout19 = nil; end;
         if self.button2 ~= nil then self.button2:destroy(); self.button2 = nil; end;
@@ -2927,14 +3670,20 @@ local function constructNew_frmVNScene()
         if self.layout12 ~= nil then self.layout12:destroy(); self.layout12 = nil; end;
         if self.imgPreview_center_3 ~= nil then self.imgPreview_center_3:destroy(); self.imgPreview_center_3 = nil; end;
         if self.button5 ~= nil then self.button5:destroy(); self.button5 = nil; end;
+        if self.button19 ~= nil then self.button19:destroy(); self.button19 = nil; end;
         if self.layout6 ~= nil then self.layout6:destroy(); self.layout6 = nil; end;
         if self.imgPreviewExtra_5 ~= nil then self.imgPreviewExtra_5:destroy(); self.imgPreviewExtra_5 = nil; end;
         if self.label3 ~= nil then self.label3:destroy(); self.label3 = nil; end;
         if self.button12 ~= nil then self.button12:destroy(); self.button12 = nil; end;
+        if self.button20 ~= nil then self.button20:destroy(); self.button20 = nil; end;
+        if self.edit36 ~= nil then self.edit36:destroy(); self.edit36 = nil; end;
         if self.layout1 ~= nil then self.layout1:destroy(); self.layout1 = nil; end;
         if self.colorComboBox9 ~= nil then self.colorComboBox9:destroy(); self.colorComboBox9 = nil; end;
         if self.label18 ~= nil then self.label18:destroy(); self.label18 = nil; end;
+        if self.layout41 ~= nil then self.layout41:destroy(); self.layout41 = nil; end;
         if self.label6 ~= nil then self.label6:destroy(); self.label6 = nil; end;
+        if self.button17 ~= nil then self.button17:destroy(); self.button17 = nil; end;
+        if self.button27 ~= nil then self.button27:destroy(); self.button27 = nil; end;
         if self.edit22 ~= nil then self.edit22:destroy(); self.edit22 = nil; end;
         if self.checkBox2 ~= nil then self.checkBox2:destroy(); self.checkBox2 = nil; end;
         if self.imgSprite_center_1 ~= nil then self.imgSprite_center_1:destroy(); self.imgSprite_center_1 = nil; end;
@@ -2947,9 +3696,10 @@ local function constructNew_frmVNScene()
         if self.labConfigWarning ~= nil then self.labConfigWarning:destroy(); self.labConfigWarning = nil; end;
         if self.colorComboBox3 ~= nil then self.colorComboBox3:destroy(); self.colorComboBox3 = nil; end;
         if self.label16 ~= nil then self.label16:destroy(); self.label16 = nil; end;
-        if self.imgExtraSprite ~= nil then self.imgExtraSprite:destroy(); self.imgExtraSprite = nil; end;
-        if self.edit16 ~= nil then self.edit16:destroy(); self.edit16 = nil; end;
         if self.rectExtrasBar ~= nil then self.rectExtrasBar:destroy(); self.rectExtrasBar = nil; end;
+        if self.edit16 ~= nil then self.edit16:destroy(); self.edit16 = nil; end;
+        if self.imgExtraSprite ~= nil then self.imgExtraSprite:destroy(); self.imgExtraSprite = nil; end;
+        if self.label24 ~= nil then self.label24:destroy(); self.label24 = nil; end;
         if self.edit28 ~= nil then self.edit28:destroy(); self.edit28 = nil; end;
         if self.layout31 ~= nil then self.layout31:destroy(); self.layout31 = nil; end;
         if self.frmStageContainer ~= nil then self.frmStageContainer:destroy(); self.frmStageContainer = nil; end;
@@ -2957,11 +3707,13 @@ local function constructNew_frmVNScene()
         if self.labPreviewErr_right_2 ~= nil then self.labPreviewErr_right_2:destroy(); self.labPreviewErr_right_2 = nil; end;
         if self.sceneContent ~= nil then self.sceneContent:destroy(); self.sceneContent = nil; end;
         if self.labPreviewErrExtra_3 ~= nil then self.labPreviewErrExtra_3:destroy(); self.labPreviewErrExtra_3 = nil; end;
+        if self.button31 ~= nil then self.button31:destroy(); self.button31 = nil; end;
         if self.imgExtra_1 ~= nil then self.imgExtra_1:destroy(); self.imgExtra_1 = nil; end;
         if self.layout27 ~= nil then self.layout27:destroy(); self.layout27 = nil; end;
         if self.colorComboBox13 ~= nil then self.colorComboBox13:destroy(); self.colorComboBox13 = nil; end;
         if self.edit5 ~= nil then self.edit5:destroy(); self.edit5 = nil; end;
         if self.labPreviewErr_center_2 ~= nil then self.labPreviewErr_center_2:destroy(); self.labPreviewErr_center_2 = nil; end;
+        if self.button36 ~= nil then self.button36:destroy(); self.button36 = nil; end;
         if self.imgExtra_4 ~= nil then self.imgExtra_4:destroy(); self.imgExtra_4 = nil; end;
         if self.layout22 ~= nil then self.layout22:destroy(); self.layout22 = nil; end;
         if self.layout16 ~= nil then self.layout16:destroy(); self.layout16 = nil; end;
@@ -2969,21 +3721,28 @@ local function constructNew_frmVNScene()
         if self.layout29 ~= nil then self.layout29:destroy(); self.layout29 = nil; end;
         if self.tabConfig ~= nil then self.tabConfig:destroy(); self.tabConfig = nil; end;
         if self.imgPreviewExtra_1 ~= nil then self.imgPreviewExtra_1:destroy(); self.imgPreviewExtra_1 = nil; end;
-        if self.imgPreview_center_2 ~= nil then self.imgPreview_center_2:destroy(); self.imgPreview_center_2 = nil; end;
         if self.layout13 ~= nil then self.layout13:destroy(); self.layout13 = nil; end;
+        if self.imgPreview_center_2 ~= nil then self.imgPreview_center_2:destroy(); self.imgPreview_center_2 = nil; end;
         if self.button4 ~= nil then self.button4:destroy(); self.button4 = nil; end;
+        if self.edit32 ~= nil then self.edit32:destroy(); self.edit32 = nil; end;
         if self.layout5 ~= nil then self.layout5:destroy(); self.layout5 = nil; end;
         if self.imgPreviewExtra_4 ~= nil then self.imgPreviewExtra_4:destroy(); self.imgPreviewExtra_4 = nil; end;
         if self.frmStage ~= nil then self.frmStage:destroy(); self.frmStage = nil; end;
         if self.label2 ~= nil then self.label2:destroy(); self.label2 = nil; end;
         if self.button13 ~= nil then self.button13:destroy(); self.button13 = nil; end;
         if self.edit18 ~= nil then self.edit18:destroy(); self.edit18 = nil; end;
+        if self.button23 ~= nil then self.button23:destroy(); self.button23 = nil; end;
+        if self.edit37 ~= nil then self.edit37:destroy(); self.edit37 = nil; end;
+        if self.checkBox6 ~= nil then self.checkBox6:destroy(); self.checkBox6 = nil; end;
         if self.colorComboBox8 ~= nil then self.colorComboBox8:destroy(); self.colorComboBox8 = nil; end;
         if self.slotConfigRight ~= nil then self.slotConfigRight:destroy(); self.slotConfigRight = nil; end;
         if self.label19 ~= nil then self.label19:destroy(); self.label19 = nil; end;
+        if self.layout40 ~= nil then self.layout40:destroy(); self.layout40 = nil; end;
         if self.label5 ~= nil then self.label5:destroy(); self.label5 = nil; end;
         if self.button14 ~= nil then self.button14:destroy(); self.button14 = nil; end;
+        if self.button26 ~= nil then self.button26:destroy(); self.button26 = nil; end;
         if self.edit21 ~= nil then self.edit21:destroy(); self.edit21 = nil; end;
+        if self.layout38 ~= nil then self.layout38:destroy(); self.layout38 = nil; end;
         if self.checkBox3 ~= nil then self.checkBox3:destroy(); self.checkBox3 = nil; end;
         if self.imgSprite_center_2 ~= nil then self.imgSprite_center_2:destroy(); self.imgSprite_center_2 = nil; end;
         if self.label12 ~= nil then self.label12:destroy(); self.label12 = nil; end;
@@ -2993,12 +3752,15 @@ local function constructNew_frmVNScene()
         if self.label20 ~= nil then self.label20:destroy(); self.label20 = nil; end;
         if self.edit24 ~= nil then self.edit24:destroy(); self.edit24 = nil; end;
         if self.tmrFade ~= nil then self.tmrFade:destroy(); self.tmrFade = nil; end;
+        if self.layout35 ~= nil then self.layout35:destroy(); self.layout35 = nil; end;
         if self.colorComboBox2 ~= nil then self.colorComboBox2:destroy(); self.colorComboBox2 = nil; end;
         if self.label17 ~= nil then self.label17:destroy(); self.label17 = nil; end;
+        if self.label27 ~= nil then self.label27:destroy(); self.label27 = nil; end;
         if self.edit17 ~= nil then self.edit17:destroy(); self.edit17 = nil; end;
         if self.layout32 ~= nil then self.layout32:destroy(); self.layout32 = nil; end;
         if self.labPreviewErrExtra_4 ~= nil then self.labPreviewErrExtra_4:destroy(); self.labPreviewErrExtra_4 = nil; end;
         if self.edit1 ~= nil then self.edit1:destroy(); self.edit1 = nil; end;
+        if self.button32 ~= nil then self.button32:destroy(); self.button32 = nil; end;
         if self.layout26 ~= nil then self.layout26:destroy(); self.layout26 = nil; end;
         if self.colorComboBox14 ~= nil then self.colorComboBox14:destroy(); self.colorComboBox14 = nil; end;
         if self.edit4 ~= nil then self.edit4:destroy(); self.edit4 = nil; end;
@@ -3011,23 +3773,31 @@ local function constructNew_frmVNScene()
         if self.configContent ~= nil then self.configContent:destroy(); self.configContent = nil; end;
         if self.layout10 ~= nil then self.layout10:destroy(); self.layout10 = nil; end;
         if self.imgPreview_center_1 ~= nil then self.imgPreview_center_1:destroy(); self.imgPreview_center_1 = nil; end;
+        if self.edit33 ~= nil then self.edit33:destroy(); self.edit33 = nil; end;
         if self.layout4 ~= nil then self.layout4:destroy(); self.layout4 = nil; end;
         if self.edit19 ~= nil then self.edit19:destroy(); self.edit19 = nil; end;
         if self.label1 ~= nil then self.label1:destroy(); self.label1 = nil; end;
         if self.button10 ~= nil then self.button10:destroy(); self.button10 = nil; end;
+        if self.button22 ~= nil then self.button22:destroy(); self.button22 = nil; end;
+        if self.edit34 ~= nil then self.edit34:destroy(); self.edit34 = nil; end;
         if self.panelConfig ~= nil then self.panelConfig:destroy(); self.panelConfig = nil; end;
+        if self.checkBox7 ~= nil then self.checkBox7:destroy(); self.checkBox7 = nil; end;
         if self.label4 ~= nil then self.label4:destroy(); self.label4 = nil; end;
         if self.button15 ~= nil then self.button15:destroy(); self.button15 = nil; end;
+        if self.button29 ~= nil then self.button29:destroy(); self.button29 = nil; end;
         if self.edit20 ~= nil then self.edit20:destroy(); self.edit20 = nil; end;
+        if self.layout39 ~= nil then self.layout39:destroy(); self.layout39 = nil; end;
         if self.imgSprite_center_3 ~= nil then self.imgSprite_center_3:destroy(); self.imgSprite_center_3 = nil; end;
         if self.label13 ~= nil then self.label13:destroy(); self.label13 = nil; end;
         if self.label23 ~= nil then self.label23:destroy(); self.label23 = nil; end;
         if self.edit13 ~= nil then self.edit13:destroy(); self.edit13 = nil; end;
         if self.rectExtra_4 ~= nil then self.rectExtra_4:destroy(); self.rectExtra_4 = nil; end;
         if self.imgBackground ~= nil then self.imgBackground:destroy(); self.imgBackground = nil; end;
+        if self.layout36 ~= nil then self.layout36:destroy(); self.layout36 = nil; end;
         if self.colorComboBox5 ~= nil then self.colorComboBox5:destroy(); self.colorComboBox5 = nil; end;
         if self.labPreviewErr_right_1 ~= nil then self.labPreviewErr_right_1:destroy(); self.labPreviewErr_right_1 = nil; end;
         if self.label14 ~= nil then self.label14:destroy(); self.label14 = nil; end;
+        if self.label26 ~= nil then self.label26:destroy(); self.label26 = nil; end;
         if self.imgSprite_right_3 ~= nil then self.imgSprite_right_3:destroy(); self.imgSprite_right_3 = nil; end;
         if self.layout33 ~= nil then self.layout33:destroy(); self.layout33 = nil; end;
         if self.slotConfigCenter ~= nil then self.slotConfigCenter:destroy(); self.slotConfigCenter = nil; end;
@@ -3035,6 +3805,7 @@ local function constructNew_frmVNScene()
         if self.imgSprite_left_1 ~= nil then self.imgSprite_left_1:destroy(); self.imgSprite_left_1 = nil; end;
         if self.labPreviewErrExtra_5 ~= nil then self.labPreviewErrExtra_5:destroy(); self.labPreviewErrExtra_5 = nil; end;
         if self.button9 ~= nil then self.button9:destroy(); self.button9 = nil; end;
+        if self.button33 ~= nil then self.button33:destroy(); self.button33 = nil; end;
         if self.layout21 ~= nil then self.layout21:destroy(); self.layout21 = nil; end;
         if self.colorComboBox15 ~= nil then self.colorComboBox15:destroy(); self.colorComboBox15 = nil; end;
         if self.imgPreview_left_3 ~= nil then self.imgPreview_left_3:destroy(); self.imgPreview_left_3 = nil; end;

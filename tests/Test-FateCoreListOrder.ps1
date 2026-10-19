@@ -1,5 +1,5 @@
 param(
-    [string]$SheetPath = (Join-Path $PSScriptRoot '..\fate_core.lfm')
+    [string]$SheetPath = (Join-Path $PSScriptRoot '..\fate_core\fate_core.lfm')
 )
 
 $source = [System.IO.File]::ReadAllText(

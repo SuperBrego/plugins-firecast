@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module sdkVersion="3.7b">
+    <id>br.GodsCorpse.FateCore</id>
+    <version>1.0</version>
+
+    <info lang="pt-br">
+        <name>Fate Core</name>
+        <description>Ficha configurável de Fate Core</description>
+        <author>GodsCorpse</author>
+        <site>https://github.com/SuperBregi</site>
+        <contact>GodsCorpse</contact>
+    </info>
+</module>
