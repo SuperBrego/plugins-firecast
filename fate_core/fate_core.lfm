@@ -7,6 +7,8 @@
     <script>
     <![CDATA[
         require("firecast.lua");
+        require("dialogs.lua");
+        require("system.lua");
         local Async = require("async.lua");
 
         -- Configuração padrão
@@ -297,6 +299,228 @@
             for _, nome in ipairs({"texturaFicha", "texturaExtras", "texturaPessoal", "texturaConfiguracao"}) do
                 local textura = self[nome]
                 if textura then textura.opacity = opacidade end
+            end
+        end
+
+        -- Exportação da ficha em Markdown
+
+        local function textoCampo(campo)
+            local valor = sheet[campo]
+            if valor == nil then return "" end
+            local texto = tostring(valor):gsub("\r\n", "\n"):gsub("\r", "\n")
+            return (texto:gsub("^%s+", ""):gsub("%s+$", ""))
+        end
+
+        local function linhaRotulo(rotulo, valor)
+            if valor == "" then return "**" .. rotulo .. ":**" end
+            return "**" .. rotulo .. ":** " .. valor
+        end
+
+        local function rotuloNivel(valor)
+            local sinal = valor >= 0 and "+" or ""
+            local nome = niveisPericia[valor]
+            if nome then return sinal .. valor .. " (" .. nome .. ")" end
+            return sinal .. valor
+        end
+
+        -- Agrupa as perícias ativas por valor. Os níveis de +5 a +1 sempre aparecem;
+        -- os demais, só quando alguma perícia os usa.
+        local function linhasPericias()
+            local porNivel = {[5] = {}, [4] = {}, [3] = {}, [2] = {}, [1] = {}}
+            local semNivel = {}
+            for i = 1, 16 do
+                local nome = textoCampo("pericia" .. i .. "_nome")
+                if sheet["pericia" .. i .. "_ativa"] == true and nome ~= "" then
+                    local bonus = tonumber(sheet["pericia" .. i .. "_bonus"]) or 0
+                    if bonus > 0 then
+                        nome = nome .. " (bônus +" .. bonus .. ")"
+                    elseif bonus < 0 then
+                        nome = nome .. " (bônus " .. bonus .. ")"
+                    end
+                    local valor = tonumber(sheet["pericia" .. i .. "_valor"])
+                    if valor then
+                        porNivel[valor] = porNivel[valor] or {}
+                        table.insert(porNivel[valor], nome)
+                    else
+                        table.insert(semNivel, nome)
+                    end
+                end
+            end
+
+            local niveis = {}
+            for valor in pairs(porNivel) do table.insert(niveis, valor) end
+            table.sort(niveis, function(a, b) return a > b end)
+
+            local linhas = {}
+            for _, valor in ipairs(niveis) do
+                table.insert(linhas, linhaRotulo(rotuloNivel(valor), table.concat(porNivel[valor], ", ")))
+            end
+            if #semNivel > 0 then
+                table.insert(linhas, linhaRotulo("Sem nível", table.concat(semNivel, ", ")))
+            end
+            return table.concat(linhas, "\n")
+        end
+
+        local function linhasFacanhas()
+            local linhas = {}
+            for i = 1, 10 do
+                if sheet["facanha" .. i .. "_ativa"] == true then
+                    local titulo = textoCampo("facanha" .. i)
+                    local descricao = textoCampo("facanha" .. i .. "_descricao")
+                    -- O recuo mantém descrições de várias linhas dentro do item da lista.
+                    descricao = descricao:gsub("\n", "\n   ")
+                    local item = titulo ~= "" and linhaRotulo(titulo, descricao) or descricao
+                    local numero = #linhas + 1
+                    table.insert(linhas, item ~= "" and numero .. ". " .. item or numero .. ".")
+                end
+            end
+            for n = #linhas + 1, 3 do
+                table.insert(linhas, n .. ".")
+            end
+            return table.concat(linhas, "\n")
+        end
+
+        -- A ficha não tem campo de Benefícios; o rótulo fica vazio para preenchimento.
+        local function blocoExtra(i)
+            local prefixo = "extraD" .. i
+            return table.concat({
+                linhaRotulo("Nome", textoCampo(prefixo .. "_nome")),
+                linhaRotulo("Descrição", textoCampo(prefixo .. "_desc")),
+                linhaRotulo("Permissões", textoCampo(prefixo .. "_perm")),
+                linhaRotulo("Custos", textoCampo(prefixo .. "_custo")),
+                "**Benefícios:**"
+            }, "\n")
+        end
+
+        local function blocosExtras()
+            local blocos = {}
+            for i = 1, 6 do
+                if sheet["extraD" .. i .. "_ativo"] == true then
+                    table.insert(blocos, blocoExtra(i))
+                end
+            end
+            -- Sem extras ativos, o índice 0 (inexistente) gera o bloco com os rótulos vazios.
+            if #blocos == 0 then return blocoExtra(0) end
+            return table.concat(blocos, "\n\n")
+        end
+
+        -- Caixas marcadas saem como [X]; as livres mantêm o número.
+        local function linhaEstresse(prefixo, total)
+            local caixas = {}
+            for i = 1, math.min(total, 8) do
+                table.insert(caixas, sheet[prefixo .. i] == true and "[X]" or "[" .. i .. "]")
+            end
+            return table.concat(caixas, " ")
+        end
+
+        local function gerarMarkdown()
+            local function campo(rotulo, nomeCampo)
+                return linhaRotulo(rotulo, textoCampo(nomeCampo))
+            end
+
+            local consequencias = {campo("Consequência Suave (2)", "cons_suave")}
+            if sheet.cfg_cse == true then
+                table.insert(consequencias, campo("Consequência Suave+ (2)", "cons_suaveX"))
+            end
+            table.insert(consequencias, campo("Consequência Moderada (4)", "cons_moderada"))
+            table.insert(consequencias, campo("Consequência Grave (6)", "cons_severa"))
+
+            return table.concat({
+                "## IDENTIFICAÇÃO",
+                "",
+                campo("Nome", "nome"),
+                campo("Nome alternativo / Alcunha", "nomeAlternativo"),
+                campo("Idade", "idade"),
+                campo("Gênero", "genero"),
+                campo("Espécie / Raça", "especieRaca"),
+                campo("Ocupação", "ocupacao"),
+                campo("Origem", "origem"),
+                campo("Afiliação", "afiliacao"),
+                "",
+                "---",
+                "",
+                "## DESCRIÇÃO DO PERSONAGEM",
+                "",
+                campo("Aparência", "aparencia"),
+                campo("Personalidade", "personalidade"),
+                campo("História", "historia"),
+                -- A ficha guarda objetivos, ideais, medos e fraquezas em um único campo.
+                campo("Motivações e Objetivos", "motivacoes"),
+                "**Crenças e Valores:**",
+                "**Medos e Fraquezas:**",
+                campo("Relacionamentos", "relacionamentos"),
+                "",
+                "---",
+                "",
+                "## ASPECTOS",
+                "",
+                campo("Conceito", "conceito"),
+                campo("Dificuldade", "dificuldade"),
+                campo("Aspecto 1", "aspecto1"),
+                campo("Aspecto 2", "aspecto2"),
+                campo("Aspecto 3", "aspecto3"),
+                "",
+                "---",
+                "",
+                "## PERÍCIAS",
+                "",
+                "1 perícia em Excepcional (+5)",
+                "2 perícias em Ótimo (+4), ",
+                "3 perícias em Bom (+3)",
+                "4 perícias em Razoável (+2), ",
+                "5 perícias em Regular (+1)",
+                "",
+                linhasPericias(),
+                "",
+                "---",
+                "",
+                "## FAÇANHAS",
+                "",
+                linhasFacanhas(),
+                "",
+                "---",
+                "",
+                "## EXTRAS",
+                "",
+                blocosExtras(),
+                "",
+                "---",
+                "",
+                "## RECURSOS",
+                "",
+                campo("Recarga", "recarga"),
+                campo("Pontos de Destino", "pontosDestino"),
+                "",
+                "---",
+                "",
+                "## ESTRESSE E CONSEQUÊNCIAS",
+                "",
+                "**Estresse Físico:**",
+                linhaEstresse("stF", tonumber(sheet.cfg_fisico) or DEFAULT_FISICO),
+                "",
+                "**Estresse Mental:**",
+                linhaEstresse("stM", tonumber(sheet.cfg_mental) or DEFAULT_MENTAL),
+                "",
+                table.concat(consequencias, "\n"),
+                "",
+                "---",
+                "",
+                "## ANOTAÇÕES",
+                "",
+                campo("Equipamentos e Pertences", "equipamentosPertences"),
+                "",
+                campo("Aliados e Contatos", "aliadosContatos"),
+                "",
+                campo("Outras Informações", "outrasInformacoes")
+            }, "\n")
+        end
+
+        local function copiarComoMarkdown()
+            if not sheet then return end
+            if System.setClipboardText(gerarMarkdown()) then
+                showMessage("Ficha copiada como Markdown.")
+            else
+                showMessage("Não foi possível copiar para a área de transferência.")
             end
         end
 
@@ -1021,6 +1245,12 @@
                                   values="{'grafite', 'classico', 'contraste'}"
                                   onChange="aplicarConfig()"/>
                         <label text="Aplicado a cartões e textura de fundo." align="client" fontSize="10" fontColor="Gray" vertTextAlign="center" margins="{left=8}"/>
+                    </layout>
+
+                    <layout align="top" height="32" margins="{top=12}">
+                        <label text="Exportar ficha" align="left" width="200" fontSize="11" vertTextAlign="center"/>
+                        <button align="left" width="220" text="Copiar como Markdown" fontSize="11" onClick="copiarComoMarkdown()"/>
+                        <label text="Copia a ficha inteira para a área de transferência." align="client" fontSize="10" fontColor="Gray" vertTextAlign="center" margins="{left=8}"/>
                     </layout>
 
                 </layout>
