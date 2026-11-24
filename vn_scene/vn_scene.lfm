@@ -1184,7 +1184,7 @@
                 <VnExtraBarItem n="5" x="268" xi="273"/>
                 <VnExtraBarItem n="6" x="335" xi="340"/>
             </layout>
-            <image name="imgDialogAvatar" left="38" top="462" width="96" height="96" style="proportional" visible="false" src=""/>
+            <image name="imgDialogAvatar" left="38" top="462" width="132" height="132" style="proportional" visible="false" src=""/>
             <label name="labDialogName"    left="35" top="461" width="1125" height="22" text="" fontColor="White" fontSize="13" fontStyle="bold"/>
             <richEdit name="labDialogContent" left="35" top="485" width="1125" height="112" visible="false"
                       readOnly="true" showToolbar="false" canFocus="false" hitTest="false"
