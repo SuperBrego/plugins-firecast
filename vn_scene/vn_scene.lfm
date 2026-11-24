@@ -26,6 +26,7 @@
                                 "center", "quote", "code", "spoiler" }
 
         local chatReceiver = nil
+        local lastSceneSync = nil
         local npcCommandListener = nil
         local npcHelpListener = nil
         local npcMap       = {}  -- nome(lower) -> {slot, layer} ou {extra=i}
@@ -854,12 +855,8 @@
 
         -- ── Chat ─────────────────────────────────────────────────────
 
-        local function onChatMessage(msg)
+        local function displayChatMessage(msgContent)
             if sheet and sheet.listenChat == false then return end
-
-            local logRec = msg.logRec
-            if not logRec then return end
-            local msgContent = logRec.msg
             if not msgContent then return end
 
             local impersonate = msgContent.impersonation
@@ -911,6 +908,100 @@
             end
         end
 
+        -- Um único campo evita que leitores recebam partes de mensagens distintas.
+        local function encodeSceneMessage(logRec)
+            local message = logRec.msg
+            local options = message.talemarkOptions or {}
+            local values = {
+                tostring(logRec.id or ""),
+                tostring(logRec.tid or ""),
+                message.impersonation.mode,
+                message.impersonation.name or "",
+                message.content,
+            }
+            for _, name in ipairs({ "defaultTextStyle", "charActionTextStyle", "charEmDashSpeechTextStyle",
+                                    "charQuotedSpeechTextStyle", "outOfCharTextStyle" }) do
+                local style = options[name]
+                values[#values + 1] = tostring(style and style.color or "")
+            end
+            for _, name in ipairs({ "parseCharActions", "parseCharEmDashSpeech", "parseCharQuotedSpeech" }) do
+                local enabled = options[name]
+                values[#values + 1] = enabled == false and "false" or ""
+            end
+            local parts = {}
+            for _, value in ipairs(values) do
+                parts[#parts + 1] = #value .. ":" .. value
+            end
+            return table.concat(parts)
+        end
+
+        local function decodeSceneMessage(packet)
+            if type(packet) ~= "string" then return nil end
+            local values, pos = {}, 1
+            for index = 1, 13 do
+                local first, last, length = packet:find("(%d+):", pos)
+                if first ~= pos then return nil end
+                length = tonumber(length)
+                if not length or last + length > #packet then return nil end
+                values[index] = packet:sub(last + 1, last + length)
+                pos = last + length + 1
+            end
+            if pos ~= #packet + 1 then return nil end
+            if values[3] ~= "character" and values[3] ~= "narrator" then return nil end
+            local options = {}
+            local styles = { "defaultTextStyle", "charActionTextStyle", "charEmDashSpeechTextStyle",
+                             "charQuotedSpeechTextStyle", "outOfCharTextStyle" }
+            for index, name in ipairs(styles) do
+                if values[index + 5] ~= "" then options[name] = { color = values[index + 5] } end
+            end
+            local flags = { "parseCharActions", "parseCharEmDashSpeech", "parseCharQuotedSpeech" }
+            for index, name in ipairs(flags) do
+                if values[index + 10] == "false" then options[name] = false end
+            end
+            return {
+                content = values[5],
+                impersonation = { mode = values[3], name = values[4] },
+                talemarkOptions = options
+            }
+        end
+
+        local function onSceneSyncChanged()
+            if not sheet or sheet.listenChat == false then return end
+            local packet = sheet.vnSceneLiveMessage
+            if not packet or packet == lastSceneSync then return end
+            lastSceneSync = packet
+            local message = decodeSceneMessage(packet)
+            if message then displayChatMessage(message) end
+        end
+
+        local function onChatMessage(msg)
+            if not sheet or sheet.listenChat == false then return end
+            local logRec = msg.logRec
+            local message = logRec and logRec.msg
+            if not message or not message.impersonation or type(message.content) ~= "string" then return end
+            local mode = message.impersonation.mode
+            if mode ~= "character" and mode ~= "narrator" then return end
+
+            local mesa = rrpg.getMesaDe(sheet)
+            local chatRoom = msg.chat and msg.chat.room
+            local sameRoom = mesa and chatRoom and mesa.objectID == chatRoom.objectID
+            local medium = logRec.medium
+            if not sameRoom or not medium or medium.kind ~= "room" then return end
+
+            local visibility = logRec.visibility
+            local public = logRec._visible ~= false and not logRec.isDeleted
+                and visibility and (visibility.mode == nil or visibility.mode == "standard")
+                and (visibility.blacklist == nil or #visibility.blacklist == 0)
+            if public and canEditSheet() then
+                local packet = encodeSceneMessage(logRec)
+                if packet ~= sheet.vnSceneLiveMessage then
+                    lastSceneSync = packet
+                    sheet.vnSceneLiveMessage = packet
+                end
+            end
+            displayChatMessage(message)
+        end
+
         -- ── Init ─────────────────────────────────────────────────────
 
         local function updateStageScale()
@@ -953,6 +1044,8 @@
             local debug      = sheet and sheet.debugMode == true
             local host       = self.sceneContent
             local panel      = self.panelConfig
+
+            self.chkDebugMode.visible = showConfig
 
             if debug then
                 if host.width <= 0 or host.height <= 0 then return end
@@ -1063,6 +1156,8 @@
         <![CDATA[ uninit() ]]>
     </event>
 
+    <dataLink field="vnSceneLiveMessage" onChange="onSceneSyncChanged()"/>
+
     <timer name="tmrConfig"  interval="600"  enabled="false" onTimer="onConfigTimer()"/>
     <timer name="tmrFade"    interval="40"   enabled="false" onTimer="onFadeTimer()"/>
     <timer name="tmrPreview" interval="2000" enabled="false" onTimer="checkPreviews()"/>
@@ -1156,7 +1251,7 @@
     <layout align="client" name="sceneContent" onResize="updateConfigTab()">
     <layout align="bottom" height="24" margins="{left=8, right=8, top=4, bottom=4}">
         <checkBox name="chkHideConfig" align="left" width="190" field="hideConfig" text="Ocultar Configuração"
-                  hint="Esconde a configuração (útil para jogadores)"
+                  hint="Esconde a configuração e o controle de debug"
                   onChange="updateConfigTab()"/>
         <checkBox name="chkDebugMode" align="left" width="340" field="debugMode" text="Modo debug (cena e configuração lado a lado)"
                   hint="Mostra a configuração ao lado da cena, sem trocar de aba"
@@ -1188,7 +1283,7 @@
             <label name="labDialogName"    left="35" top="461" width="1125" height="22" text="" fontColor="White" fontSize="13" fontStyle="bold"/>
             <richEdit name="labDialogContent" left="35" top="485" width="1125" height="112" visible="false"
                       readOnly="true" showToolbar="false" canFocus="false" hitTest="false"
-                      defaultFontColor="White" defaultFontSize="12" backgroundColor="#00000000"/>
+                      defaultFontColor="White" defaultFontSize="23.4" backgroundColor="#00000000"/>
             <button name="btnDialogExpand" left="1170" top="460" width="90" height="20"
                     text="Expandir" fontSize="9" visible="false"
                     hint="Expande ou reduz a caixa de diálogo"
