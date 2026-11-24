@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<popupForm name="frmVnNpcVisualColor" title="Cor da fala" width="300" height="132" cancelable="true">
+    <label left="12" top="12" width="276" height="22" text="Cor da fala" fontStyle="bold"/>
+    <colorComboBox name="cboNpcVisualColor" left="12" top="42" width="108" height="32"
+                   useAlpha="false" hitTest="true" canFocus="true" hint="Selecionar cor"/>
+    <button left="128" top="42" width="160" height="32" text="Abrir paleta"
+            onClick="self.cboNpcVisualColor:dropDown()"/>
+    <button left="122" top="88" width="80" height="30" text="Cancelar" onClick="self:close()"/>
+    <button name="btnApplyColor" left="210" top="88" width="78" height="30" text="Aplicar"/>
+</popupForm>
